@@ -4,6 +4,11 @@ import os
 
 # 1. Extract full text from a PDF file
 def extract_full_text(pdf_path):
+    print(f"Opening PDF at: {pdf_path}")
+    if not os.path.exists(pdf_path):
+        print("ERROR: PDF path does not exist.")
+        return ""
+
     text = ""
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
@@ -15,7 +20,7 @@ def extract_full_text(pdf_path):
 # 2. Split text into sections
 def split_into_items(full_text):
     # regex to match ITEM headings
-    pattern = r"(ITEM\s+\d+[A]?\.)"
+    pattern = r"(Item\s+1A?\.?\s*|Item\s+7\.?\s*|Item\s+8\.?\s*)"
     parts = re.split(pattern, full_text)
 
     sections = {}
@@ -32,10 +37,10 @@ def split_into_items(full_text):
 # 3. Save important sections
 def save_target_sections(sections, output_folder):
     targets = {
-        "ITEM 1.": "businessOverview.txt",
-        "ITEM 1A.": "riskFactors.txt",
-        "ITEM 7.": "managementDiscussion.txt",
-        "ITEM 8.": "incomeStatements.txt"
+        "Item 1.": "businessOverview.txt",
+        "Item 1A.": "riskFactors.txt",
+        "Item 7.": "managementDiscussion.txt",
+        "Item 8.": "incomeStatements.txt"
     }
 
     os.makedirs(output_folder, exist_ok=True)
@@ -63,5 +68,7 @@ def extract_10k_sections(pdf_path, output_folder):
 
 # 5. Run the script    
 if __name__ == "__main__":
-    pdf_path = "../data/Qualcomm/10K.pdf"
-    output_folder = "../data/Qualcomm/extracted"
+    pdf_path = "data/Qualcomm/10K.pdf"
+    output_folder = "data/Qualcomm/extracted"
+    text = extract_10k_sections(pdf_path, output_folder)
+    print(text)
