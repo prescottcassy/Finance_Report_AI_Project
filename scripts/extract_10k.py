@@ -1,3 +1,15 @@
+""" This script extracts text and financial 
+tables from SEC 10‑K PDF filings by identifying 
+ITEM sections using a flexible, format‑agnostic
+regex. It saves key sections—Business Overview,
+Risk Factors, MD&A, and Item 8 financial statements;
+into organized text files and consolidates all
+detected financial tables into CSVs. The tool is 
+designed to handle inconsistent 10‑K formatting 
+across companies, ensuring reliable extraction 
+for downstream analysis and modeling. 
+""
+
 import pdfplumber
 import re
 import os
