@@ -8,7 +8,7 @@ detected financial tables into CSVs. The tool is
 designed to handle inconsistent 10‑K formatting 
 across companies, ensuring reliable extraction 
 for downstream analysis and modeling. 
-""
+"""
 
 import pdfplumber
 import re
