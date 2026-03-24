@@ -1,5 +1,9 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from huggingface_hub import login
 import torch
+import os
+
+login()
 
 # Check GPU availability
 print(f"CUDA Available: {torch.cuda.is_available()}")
@@ -12,7 +16,29 @@ tokenizer = AutoTokenizer.from_pretrained(
     model_id,
     trust_remote_code=True
 )
-prompt = "Who is the first Czar of Russia?"
+
+model = AutoModelForCausalLM.from_pretrained(
+    model_id,
+    dtype=torch.float16, 
+    device_map="auto"
+)
+
+def load_text(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+folder = "data/Qualcomm/extracted"
+texts = []
+
+for filename in os.listdir(folder):
+    if filename.endswith(".txt"):
+        path = os.path.join(folder, filename)
+        texts.append(load_text(path))
+
+section_text = "\n\n".join(texts)
+
+# Generate response
+prompt = "Give me information on is this a good company to invest in based on the 10-K sections."
 messages = [
     {"role": "user", 
     "content": prompt}
@@ -25,13 +51,6 @@ inputs = tokenizer.apply_chat_template(
     return_tensors="pt"
 ).to(device)
 
-model = AutoModelForCausalLM.from_pretrained(
-    model_id,
-    dtype=torch.float16, 
-    device_map="auto"
-)
-
-# Generate response
 outputs = model.generate(
     **inputs, 
     max_new_tokens=1000,
