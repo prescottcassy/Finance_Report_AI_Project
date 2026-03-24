@@ -53,7 +53,7 @@ for filename in os.listdir(folder):
 section_text = "\n\n".join(texts)
 
 # Generate response
-prompt = "Give me information on is this a good company to invest in based on the 10-K sections."
+prompt = "Did this company perform well last year? What are the key risks and opportunities for investors based on this 10-K report? Provide a concise summary with actionable insights."
 messages = [
     {"role": "user", 
     "content": prompt}
