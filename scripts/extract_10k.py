@@ -21,8 +21,8 @@ def extract_full_text(pdf_path):
 # 2. Split text into sections
 def split_into_items(full_text):
     # regex to match ITEM headings
-    pattern = r"(Item\s+1A?\.?\s*|Item\s+7\.?\s*|Item\s+8\.?\s*)"
-    parts = re.split(pattern, full_text)
+    pattern = r"(ITEM[\s\u00A0]*\d+[A]?(?:[\.\:\-–—])?)"
+    parts = re.split(pattern, full_text, flags=re.IGNORECASE)
 
     sections = {}
     current = None
@@ -81,12 +81,11 @@ def find_item_position(text, item_num):
     
     return -1
 
-# 5. Extract tables from Item 8 pages
+# 5. Extract tables from Item 8 pages with better parsing
 def extract_item8_tables(pdf_path, full_text, output_folder):
     # Identify where Item 8 starts and ends using flexible search
     item8_start = find_item_position(full_text, "8")
     item9_start = find_item_position(full_text, "9")
-
 
     if item8_start == -1:
         print("Could not find Item 8 in text.")
@@ -109,17 +108,12 @@ def extract_item8_tables(pdf_path, full_text, output_folder):
         for i, page in enumerate(pdf.pages):
             page_text = page.extract_text() or ""
 
-            # Print progress every 10 pages
-            if i % 10 == 0:
-                print(f"Checking page {i+1}/{len(pdf.pages)}")
-
-            # Skip early pages (covers, TOC, etc.) - financial statements start around page 50+
-            if i < 50:
-                continue
+            # Print progress for every page
+            print(f"Checking page {i+1}/{len(pdf.pages)}")
 
             # Check for financial statement keywords
             has_keywords = any(keyword in page_text.upper() for keyword in 
-                             ["CONSOLIDATED", "BALANCE SHEET", "INCOME", "OPERATIONS", "CASH FLOW"])
+                             ["CONSOLIDATED", "BALANCE SHEET", "INCOME", "OPERATIONS", "CASH FLOW", "REVENUES", "EXPENSES"])
             
             if has_keywords:
                 pages_with_keywords += 1
@@ -127,38 +121,79 @@ def extract_item8_tables(pdf_path, full_text, output_folder):
                 # Extract the table title/name from page text
                 table_name = extract_table_name(page_text)
                 
-                tables = page.extract_tables()
+                # Try multiple extraction strategies
+                all_tables = []
                 
-                if tables is None: 
-                    continue
-
-                for t_index, table in enumerate(tables):
-                    if table is None or len(table) == 0:
+                # Strategy 1: Standard extraction
+                try:
+                    tables = page.extract_tables()
+                    if tables:
+                        all_tables.extend(tables)
+                except:
+                    pass
+                
+                # Strategy 2: With explicit lines
+                try:
+                    tables = page.extract_tables({
+                        "vertical_strategy": "lines",
+                        "horizontal_strategy": "lines"
+                    })
+                    if tables:
+                        all_tables.extend(tables)
+                except:
+                    pass
+                
+                # Strategy 3: With explicit edges (catches tables without lines)
+                try:
+                    tables = page.extract_tables({
+                        "vertical_strategy": "edges",
+                        "horizontal_strategy": "edges"
+                    })
+                    if tables:
+                        all_tables.extend(tables)
+                except:
+                    pass
+                
+                # Remove duplicates and process
+                seen = set()
+                for table in all_tables:
+                    if table is None or len(table) < 2:
                         continue
                     
-                    
-                    # Group tables by type
-                    if table_name:
-                        if table_name not in tables_by_type:
-                            tables_by_type[table_name] = []
-                        tables_by_type[table_name].append((table, i+1))
-                    
-                    tables_found += 1
+                    # Create a unique key for the table to avoid duplicates
+                    table_key = str(table[:2])  # Use first 2 rows as identifier
+                    if table_key not in seen:
+                        seen.add(table_key)
+                        
+                        # If no table name found, skip
+                        if table_name:
+                            if table_name not in tables_by_type:
+                                tables_by_type[table_name] = []
+                            tables_by_type[table_name].append((table, i+1))
+                            tables_found += 1
+                            print(f"  → Found table: {table_name} ({len(table)} rows)")
+        
+        print(f"\nSummary: Found {pages_with_keywords} pages with financial statement keywords")
+        print(f"Found {tables_found} total table entries\n")
         
         # Write consolidated files - one per table type
         for table_name, table_list in tables_by_type.items():
             csv_path = os.path.join(output_folder, f"{table_name}.csv")
+            total_rows = sum(len(t[0]) for t in table_list)
+            
             with open(csv_path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
+                
+                # Add metadata header
+                writer.writerow([f"{table_name.upper().replace('_', ' ')} - Multiple Years"])
+                writer.writerow([f"Total occurrences: {len(table_list)}, Total rows: {total_rows}"])
+                writer.writerow([])
                 
                 for idx, (table, page_num) in enumerate(table_list):
                     # Add separator between different occurrences of same table type
                     if idx > 0:
-                        writer.writerow([f"--- Table from page {page_num} ---"])
                         writer.writerow([])
-                    else:
-                        # Add header for first occurrence
-                        writer.writerow([f"Table from page {page_num}"])
+                        writer.writerow([f"--- Occurrence {idx+1} from page {page_num} ---"])
                         writer.writerow([])
                     
                     for row in table:
@@ -166,22 +201,22 @@ def extract_item8_tables(pdf_path, full_text, output_folder):
                     
                     writer.writerow([])  # Blank row between tables
             
-            print(f"Saved consolidated table: {table_name}.csv ({len(table_list)} occurrences)")
+            print(f"✓ Saved: {table_name}.csv ({len(table_list)} occurrences, {total_rows} total rows)")
         
 # 6. Save important sections
 def save_target_sections(sections, output_folder):
     targets = {
-        "Item 1.": "businessOverview.txt",
-        "Item 1A.": "riskFactors.txt",
-        "Item 7.": "managementDiscussion.txt",
-        "Item 8.": "incomeStatements.txt"
+        "ITEM 1.": "businessOverview.txt",
+        "ITEM 1A.": "riskFactors.txt",
+        "ITEM 7.": "managementDiscussion.txt",
+        "ITEM 8.": "incomeStatements.txt"
     }
 
     os.makedirs(output_folder, exist_ok=True)
     
-    for item, filename in targets.items():
+    for key, filename in targets.items():
         for section_title in sections:
-            if section_title.startswith(item):
+            if section_title.startswith(key):
                 path = os.path.join(output_folder, filename)
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(sections[section_title])
