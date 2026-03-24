@@ -1,3 +1,18 @@
+"""
+Mistral 7B Model Reader for Financial Document Analysis
+
+This module loads and runs the Mistral 7B Instruct model to analyze
+10-K financial documents and provide investment insights. It uses GPU
+acceleration (CUDA) when available and requires HF_TOKEN environment
+variable for faster model access.
+
+Usage:
+    python mistral_reader.py
+    
+Note:
+    Set HF_TOKEN environment variable before running for faster downloads.
+"""
+
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from huggingface_hub import login
 import torch
