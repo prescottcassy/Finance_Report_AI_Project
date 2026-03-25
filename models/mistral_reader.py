@@ -2,9 +2,7 @@
 Mistral 7B Model Reader for Financial Document Analysis
 
 This module loads and runs the Mistral 7B Instruct model to analyze
-10-K financial documents and provide investment insights. It uses GPU
-acceleration (CUDA) when available and requires HF_TOKEN environment
-variable for faster model access.
+10-K financial documents and provide investment insights. 
 
 Usage:
     python mistral_reader.py
@@ -24,7 +22,7 @@ login()
 print(f"CUDA Available: {torch.cuda.is_available()}")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Load model using transformers (no xformers needed)
+# Load model using transformers
 print("Loading Mistral model...")
 model_id = "mistralai/Mistral-7B-Instruct-v0.3"
 tokenizer = AutoTokenizer.from_pretrained(
