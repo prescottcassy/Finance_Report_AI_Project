@@ -16,6 +16,7 @@ from huggingface_hub import login
 import torch
 import os
 
+
 login()
 
 # Check GPU availability
@@ -32,9 +33,9 @@ tokenizer = AutoTokenizer.from_pretrained(
 
 model = AutoModelForCausalLM.from_pretrained(
     model_id,
-    dtype=torch.float16, 
-    device_map="auto"
+    dtype=torch.float16 if torch.cuda.is_available() else torch.float32
 )
+model.to(device)
 
 def load_text(path):
     with open(path, "r", encoding="utf-8") as f:
@@ -50,8 +51,17 @@ for filename in os.listdir(folder):
 
 section_text = "\n\n".join(texts)
 
+# Limit text to first 4000 chars to avoid token overflow
+section_text = section_text[:4000]
+
 # Generate response
-prompt = "Did this company perform well last year? What are the key risks and opportunities for investors based on this 10-K report? Provide a concise summary with actionable insights."
+prompt = f"""Analyze the extracted information from the 10-K document and provide a brief TLDR with the bottom line up front for investors.
+
+Document:
+{section_text}
+
+Summary:"""
+
 messages = [
     {"role": "user", 
     "content": prompt}
@@ -64,10 +74,15 @@ inputs = tokenizer.apply_chat_template(
     return_tensors="pt"
 ).to(device)
 
-outputs = model.generate(
-    **inputs, 
-    max_new_tokens=1000,
-)
+with torch.no_grad():
+    outputs = model.generate(
+        input_ids=inputs["input_ids"],
+        attention_mask=inputs.get("attention_mask"),
+        max_new_tokens=500,
+        temperature=0.7,
+        top_p=0.9,
+        do_sample=True,
+    )
 
 print(tokenizer.decode(
     outputs[0], 
