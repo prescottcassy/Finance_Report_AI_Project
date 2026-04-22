@@ -1,0 +1,1 @@
+<FileUploader @upload="handleUpload" />
