@@ -1,0 +1,47 @@
+ Management’s Discussion and Analysis of Financial Condition and Results of Operations.”
+Revenue Recognition. We grant licenses or otherwise provide rights to use portions of our intellectual property portfolio, which, among other rights, includes
+certain patent rights essential to and/or useful in the manufacture, sale or use of certain wireless products. We estimate and recognize sales-based royalties on such
+licensed products in the period in which the licensees’ sales occur, which is based largely on preliminary royalty estimates provided by our licensees. For fiscal
+2025 and 2024, actual amounts for sales-based royalties have been materially consistent with such estimates, and no significant reversals of revenues have been
+required as a result of adjustments to prior period royalty estimates.
+Impairment of Non-marketable Equity Investments. We monitor our investments, many of which are in early-stage companies, for events or circumstances
+that could indicate impairment, including those that result from observable price adjustments. Key considerations in this assessment include the investee’s
+financial and liquidity position and business forecasts (including their ability to respond to any significant deterioration), industry performance, development
+and/or market acceptance of the investee’s products or technologies, as well as considering any appreciation in fair value that has not been recognized in the
+carrying values of such investments and other relevant events and factors. Measurement of any impairments may require the use of unobservable inputs. In fiscal
+2025 and 2024, there were no significant impairment losses or adjustments to our previous judgments and estimates recorded.
+Inventories. We measure inventory at the lower of cost or net realizable value considering judgments and estimates related to future customer demand and
+other market conditions, such as the impact of the macroeconomic environment and global trade policies. Although we believe these estimates are reasonable, any
+significant changes in customer demand that are less favorable than our previous estimates may require additional inventory write-downs and would be reflected
+in cost of sales resulting in a negative impact to our gross margin in that period. For fiscal 2025 and 2024, the net effect from changes in this estimate and related
+reserves was less than 1% of cost of revenues during each period.
+Impairment of Goodwill, Other Indefinite-Lived Assets and Long-Lived Assets. We monitor our goodwill, other indefinite-lived assets and long-lived assets
+for the existence of impairment indicators and apply judgments in the valuation methods (generally income or market approach) and underlying inputs and
+assumptions utilized in such assessments, which are generally unobservable inputs. During fiscal 2025 and 2024, there were no material impairment charges for
+long-lived or indefinite-lived assets. Additionally, the estimated fair values of our QCT and QTL reporting units, based on our qualitative assessment, were
+substantially in excess of their respective carrying values at September 28, 2025.
+Legal and Regulatory Proceedings. We are currently involved in certain legal and regulatory proceedings, the outcomes of which are inherently uncertain. If
+there is at least a reasonable possibility that a material loss may have been incurred associated with pending legal and regulatory proceedings, we disclose such
+fact. We record our best estimate of a loss related to pending legal and regulatory proceedings when the loss is considered probable and the amount can be
+reasonably estimated. We face difficulties in evaluating or estimating likely outcomes and/or the amount of possible loss in certain legal and regulatory
+proceedings. Until the final resolution of such matters, there may be an exposure to loss in excess of the amount recorded (or the possible loss disclosed), and such
+amounts could be material.
+Income Taxes. We make significant judgments and estimates in determining our provision for income taxes, including our assessment of our income tax
+positions, both in the U.S. and foreign jurisdictions, given the uncertainties involved in the interpretation and application of complex tax laws and regulations in
+various taxing jurisdictions. While we believe we have appropriate support for the positions we have taken or plan to take on our tax returns, we regularly assess
+the potential outcomes of examinations by taxing authorities in determining the adequacy of our provision for income taxes based on the technical merits of the
+position. The actual liability for U.S. or foreign taxes may be materially different from our estimates, which could result in the need to record additional tax
+liabilities or potentially reverse previously recorded tax liabilities. Based on our results for fiscal 2025, an assumed one-percentage point increase to our annual
+effective tax rate would result in an increase in income tax expense of $127 million.
+Deferred tax assets represent amounts available to reduce income taxes payable on taxable income in future years. Under the OBBB enacted in July 2025, we
+expect to be subject to CAMT beginning in fiscal 2026 and therefore, we no longer expect to realize substantially all of our existing federal deferred tax assets. As
+a result, we recorded a charge of $5.7 billion to income tax expense to establish a valuation allowance against such deferred tax assets in the fourth quarter of
+fiscal 2025. Factors considered in this determination included assessing the adequacy of future expected taxable income from all sources, including reversal of
+taxable temporary differences, forecasted operating earnings and available tax planning strategies, and considering that substantially all of our income is taxed in
+the U.S., of which a significant portion qualifies for preferential treatment as FDDEI. Changes in future taxable income (including less of our income qualifying
+for preferential treatment as FDDEI), tax laws (including changes to the CAMT rules) and other factors may change our determination regarding whether we will
+be able to realize our deferred tax assets.
+46
+Recent Accounting Pronouncements
+Information regarding recent accounting pronouncements and the impact of those pronouncements, if any, on our consolidated financial statements is
+provided in this Annual Report in “Notes to Consolidated Financial Statements, Note 1. Significant Accounting Policies.”

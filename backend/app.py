@@ -1,53 +1,54 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationMixin
-import torch
 import os
 import importlib.util
+import tempfile
+import threading
+import time
+from datetime import datetime
 
-# Import your existing extraction script
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-extract_10k_path = os.path.join(project_root, "scripts", "extract_10k.py")
-spec = importlib.util.spec_from_file_location("extract_10k", extract_10k_path)
+# Import extract_10k
+extract_path = os.path.join(os.path.dirname(__file__), '..', 'scripts', 'extract_10k.py')
+spec = importlib.util.spec_from_file_location("extract_10k", extract_path)
+
+def _missing_extract(*args, **kwargs):
+    raise RuntimeError("extract_10k could not be loaded.")
+
+extract_10k_sections = _missing_extract
 if spec and spec.loader:
-    extract_10k_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(extract_10k_module)
-    extract_10k_sections = extract_10k_module.extract_10k_sections
+    extract_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(extract_module)
+    extract_10k_sections = extract_module.extract_10k_sections
+
+# Import 10k_reader (same folder as app.py)
+reader_path = os.path.join(os.path.dirname(__file__), '10k_reader.py')
+spec2 = importlib.util.spec_from_file_location("10k_reader", reader_path)
+
+def _missing_reader(*args, **kwargs):
+    raise RuntimeError("10k_reader could not be loaded.")
+
+generate_summary = _missing_reader
+generate_bluf = _missing_reader
+generate_narrative = _missing_reader
+
+if spec2 and spec2.loader:
+    reader_module = importlib.util.module_from_spec(spec2)
+    spec2.loader.exec_module(reader_module)
+    print("[STARTUP] Loading AI model... this may take a moment")
+    try:
+        reader_module.load_model()
+        print("[STARTUP] ✓ AI model loaded successfully")
+    except Exception as e:
+        print(f"[STARTUP] ✗ Failed to load model: {e}")
+    generate_summary = reader_module.generate_summary
+    generate_bluf = reader_module.generate_bluf
+    generate_narrative = reader_module.generate_narrative
 
 app = Flask(__name__)
 CORS(app, origins=["http://localhost:5173"])
 
-# Load Mistral once on startup
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model_id = "mistralai/Mistral-7B-Instruct-v0.3"
-tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
-model: GenerationMixin = AutoModelForCausalLM.from_pretrained(
-    model_id,
-    torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-    device_map="auto"
-)
-
-def run_mistral(text, section_name):
-    prompt = f"""Summarize this {section_name} section from a 10-K for investors. Be concise.
-
-{text[:3000]}
-
-Summary:"""
-    messages = [{"role": "user", "content": prompt}]
-    inputs = tokenizer.apply_chat_template(
-        messages, add_generation_prompt=True,
-        return_dict=True, return_tensors="pt"
-    ).to(device)
-    with torch.no_grad():
-        outputs = model.generate(
-            input_ids=inputs["input_ids"],
-            attention_mask=inputs.get("attention_mask"),
-            max_new_tokens=300,
-            temperature=0.7,
-            top_p=0.9,
-            do_sample=True,
-        )
-    return tokenizer.decode(outputs[0], skip_special_tokens=True).split("Summary:")[-1].strip()
+# Background job storage
+jobs = {}
 
 @app.route("/analyze", methods=["POST"])
 def analyze():
@@ -57,49 +58,117 @@ def analyze():
     if not file:
         return jsonify({"error": "No file provided"}), 400
 
-    # 1. Save uploaded PDF
-    pdf_path = "data/uploaded/10k.pdf"
-    output_folder = "data/uploaded/extracted"
-    os.makedirs("data/uploaded", exist_ok=True)
-    os.makedirs(output_folder, exist_ok=True)
-    file.save(pdf_path)
+    # Create job ID
+    job_id = f"{company}_{datetime.now().timestamp()}"
+    jobs[job_id] = {"status": "starting", "progress": 0, "result": None, "error": None}
 
-    # 2. Run extraction
-    extract_10k_sections(pdf_path, output_folder)
+    # Run analysis in background thread
+    thread = threading.Thread(
+        target=_analyze_async,
+        args=(job_id, file, company),
+        daemon=True
+    )
+    thread.start()
 
-    # 3. Read extracted text files
-    sections_map = {
-        "Business Overview": "businessOverview.txt",
-        "Risk Factors":      "riskFactors.txt",
-        "MD&A":              "managementDiscussion.txt",
-        "Financials":        "incomeStatements.txt",
+    return jsonify({"job_id": job_id, "status": "started"})
+
+@app.route("/job/<job_id>", methods=["GET"])
+def get_job_status(job_id):
+    if job_id not in jobs:
+        return jsonify({"error": "Job not found"}), 404
+
+    job = jobs[job_id]
+    response = {
+        "status": job["status"],
+        "progress": job["progress"],
     }
 
-    sections = []
-    all_text = ""
+    if job["result"]:
+        response["result"] = job["result"]
+    if job["error"]:
+        response["error"] = job["error"]
 
-    for title, filename in sections_map.items():
-        path = os.path.join(output_folder, filename)
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                text = f.read()
-            summary = run_mistral(text, title)
-            sections.append({"title": title, "summary": summary})
-            all_text += f"\n\n{title}:\n{summary}"
-        else:
-            sections.append({"title": title, "summary": "Section not found in document."})
+    return jsonify(response)
 
-    # 4. Generate BLUF + narrative
-    bluf = run_mistral(all_text, "BLUF bottom line up front investor summary")
-    narrative = run_mistral(all_text, "storytelling investor narrative connecting all sections")
+def _analyze_async(job_id, file, company):
+    """Run analysis in background and update job status"""
+    try:
+        jobs[job_id]["status"] = "extracting"
+        jobs[job_id]["progress"] = 10
 
-    return jsonify({
-        "companyName": company,
-        "fiscalYear": "2024",
-        "bluf": bluf,
-        "narrative": narrative,
-        "sections": sections
-    })
+        # Use temp directory
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pdf_path = os.path.join(tmpdir, "10k.pdf")
+            output_folder = os.path.join(tmpdir, "extracted")
+            os.makedirs(output_folder, exist_ok=True)
+
+            file.save(pdf_path)
+
+            # Step 1 — extract sections from uploaded file
+            print(f"[{job_id}] Extracting sections...")
+            extract_10k_sections(pdf_path, output_folder)
+            jobs[job_id]["progress"] = 30
+
+            # Step 2 — summarize each section
+            print(f"[{job_id}] Generating summaries...")
+            jobs[job_id]["status"] = "summarizing"
+            
+            sections_map = {
+                "Business Overview": "businessOverview.txt",
+                "Risk Factors":      "riskFactors.txt",
+                "MD&A":              "managementDiscussion.txt",
+                "Financials":        "incomeStatements.txt",
+            }
+
+            sections = []
+            all_text = ""
+
+            for idx, (title, fname) in enumerate(sections_map.items()):
+                path = os.path.join(output_folder, fname)
+                if os.path.exists(path):
+                    with open(path, "r", encoding="utf-8") as f:
+                        text = f.read()
+                    print(f"[{job_id}] Summarizing {title}...")
+                    summary = generate_summary(text, title)
+                    sections.append({"title": title, "summary": summary})
+                    all_text += f"\n\n{title}:\n{summary}"
+                else:
+                    sections.append({"title": title, "summary": "Section not found."})
+                
+                jobs[job_id]["progress"] = 30 + (idx + 1) * 12
+
+            # Step 3 — generate BLUF + narrative
+            print(f"[{job_id}] Generating BLUF and narrative...")
+            jobs[job_id]["status"] = "generating"
+            jobs[job_id]["progress"] = 75
+            
+            bluf = generate_bluf(all_text)
+            jobs[job_id]["progress"] = 85
+            
+            narrative = generate_narrative(all_text)
+            jobs[job_id]["progress"] = 95
+
+            # Success
+            result = {
+                "companyName": company,
+                "fiscalYear": "2024",
+                "bluf": bluf,
+                "narrative": narrative,
+                "sections": sections
+            }
+
+            jobs[job_id]["result"] = result
+            jobs[job_id]["status"] = "complete"
+            jobs[job_id]["progress"] = 100
+
+            print(f"[{job_id}] ✓ Analysis complete")
+
+    except Exception as e:
+        print(f"[{job_id}] ✗ Error: {e}")
+        import traceback
+        traceback.print_exc()
+        jobs[job_id]["status"] = "error"
+        jobs[job_id]["error"] = str(e)
 
 if __name__ == "__main__":
-    app.run(port=8000, debug=True)
+    app.run(port=8000, debug=False)

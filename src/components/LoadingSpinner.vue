@@ -2,6 +2,10 @@
   <div class="spinner-wrapper">
     <div class="spinner"></div>
     <p>{{ message }}</p>
+    <div class="progress-bar">
+      <div class="progress-fill" :style="{ width: progress + '%' }"></div>
+    </div>
+    <p class="progress-text">{{ progress }}%</p>
   </div>
 </template>
 
@@ -10,6 +14,10 @@ defineProps({
   message: {
     type: String,
     default: 'Analyzing your 10-K...'
+  },
+  progress: {
+    type: Number,
+    default: 0
   }
 })
 </script>
@@ -39,5 +47,24 @@ defineProps({
 p {
   color: #6b7280;
   font-size: 0.95rem;
+}
+
+.progress-bar {
+  width: 200px;
+  height: 4px;
+  background: #e5e7eb;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: #3b82f6;
+  transition: width 0.3s ease;
+}
+
+.progress-text {
+  font-size: 0.85rem;
+  margin: 0 !important;
 }
 </style>

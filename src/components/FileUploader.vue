@@ -40,3 +40,38 @@ function submit() {
   emit('upload', formData)
 }
 </script>
+
+<style scoped>
+.uploader {
+  border: 2px dashed #2d2d2d;
+  border-radius: 10px;
+  padding: 40px;
+  text-align: center;
+  cursor: pointer;
+}
+
+.uploader:hover {
+  border-color: #6366f1;
+  background: #1a1a1a;
+}
+
+p {
+  color: #9ca3af;
+  margin: 8px 0;
+}
+
+button {
+  margin-top: 16px;
+  padding: 10px 24px;
+  background: #6366f1;
+  color: #ffffff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+button:disabled {
+  background: #4b5563;
+  cursor: not-allowed;
+}
+</style>

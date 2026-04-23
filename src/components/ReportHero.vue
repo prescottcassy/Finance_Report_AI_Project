@@ -25,3 +25,43 @@ defineProps({
   }
 })
 </script>
+
+<style scoped>
+.report-hero {
+  background: #1a1a1a;
+  border-radius: 12px;
+  padding: 32px 24px;
+  margin-bottom: 24px;
+  border: 1px solid #2d2d2d;
+}
+
+h1 {
+  font-size: 1.75rem;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+
+.fiscal-year {
+  color: #6b7280;
+  font-size: 0.9rem;
+  margin: 0 0 24px;
+}
+
+.bluf,
+.narrative {
+  margin: 24px 0;
+}
+
+h2 {
+  font-size: 1.1rem;
+  font-weight: 500;
+  color: #6366f1;
+  margin: 0 0 12px;
+}
+
+p {
+  color: #d1d5db;
+  line-height: 1.6;
+  margin: 0;
+}
+</style>

@@ -31,7 +31,7 @@
       <input v-model="companyName" type="text" placeholder="Company name (e.g. Qualcomm)" />
     </div>
 
-    <LoadingSpinner v-if="isLoading" message="This may take a minute..." />
+    <LoadingSpinner v-if="isLoading" :message="loadingMessage" :progress="loadingProgress" />
     <button v-else-if="file" class="analyze-btn" @click="handleUpload">Generate Report</button>
   </div>
 </template>
@@ -47,6 +47,8 @@ const file = ref(null)
 const companyName = ref('')
 const isDragging = ref(false)
 const isLoading = ref(false)
+const loadingProgress = ref(0)
+const loadingMessage = ref('This may take a minute...')
 
 function onFileChange(e) {
   file.value = e.target.files[0]
@@ -57,12 +59,75 @@ function onDrop(e) {
   file.value = e.dataTransfer.files[0]
 }
 
-function handleUpload() {
+async function handleUpload() {
   isLoading.value = true
-  setTimeout(() => {
-    router.push('/report')
+  loadingProgress.value = 0
+  loadingMessage.value = 'Starting analysis...'
+  
+  const formData = new FormData()
+  formData.append('file', file.value)
+  formData.append('company', companyName.value || 'Company')
+
+  try {
+    // Step 1: Submit the file and get job ID
+    const submitResponse = await fetch('http://localhost:8000/analyze', {
+      method: 'POST',
+      body: formData
+    })
+    const submitData = await submitResponse.json()
+    
+    if (!submitData.job_id) {
+      throw new Error(submitData.error || 'Failed to start analysis')
+    }
+
+    const jobId = submitData.job_id
+    console.log(`Analysis started with job ID: ${jobId}`)
+    loadingProgress.value = 5
+    loadingMessage.value = 'Extracting 10-K sections...'
+
+    // Step 2: Poll for job completion
+    let jobComplete = false
+    let pollCount = 0
+    const maxPolls = 300 // 5 minutes with 1 second intervals
+
+    while (!jobComplete && pollCount < maxPolls) {
+      await new Promise(resolve => setTimeout(resolve, 1000)) // Wait 1 second between polls
+      pollCount++
+
+      const statusResponse = await fetch(`http://localhost:8000/job/${jobId}`)
+      const statusData = await statusResponse.json()
+
+      // Update progress and message based on status
+      if (statusData.status === 'extracting') {
+        loadingMessage.value = 'Extracting sections...'
+      } else if (statusData.status === 'summarizing') {
+        loadingMessage.value = 'Generating AI summaries...'
+      } else if (statusData.status === 'generating') {
+        loadingMessage.value = 'Creating investor narrative...'
+      }
+      
+      loadingProgress.value = Math.max(loadingProgress.value, statusData.progress)
+      console.log(`Job status: ${statusData.status} (${statusData.progress}%)`)
+
+      if (statusData.status === 'complete') {
+        jobComplete = true
+        loadingProgress.value = 100
+        localStorage.setItem('report', JSON.stringify(statusData.result))
+        router.push('/report')
+      } else if (statusData.status === 'error') {
+        throw new Error(statusData.error || 'Analysis failed')
+      }
+    }
+
+    if (!jobComplete) {
+      throw new Error('Analysis timed out after 5 minutes')
+    }
+  } catch (err) {
+    console.error(err)
+    alert(`Error: ${err.message}`)
     isLoading.value = false
-  }, 2000)
+    loadingProgress.value = 0
+  }
 }
 </script>
 
