@@ -34,7 +34,9 @@ function onDrop(e) {
 }
 
 function submit() {
-    if (file.value) return
-        emit('upload', file.value)
-    }
+  const formData = new FormData()
+  formData.append('file', file.value)
+  formData.append('company', companyName.value)
+  emit('upload', formData)
+}
 </script>
