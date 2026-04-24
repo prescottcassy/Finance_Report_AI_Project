@@ -1,6 +1,7 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from huggingface_hub import login
 import torch
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 login()
 
@@ -28,7 +29,7 @@ def generate_summary(text, section_name):
     prompt = f"""Analyze this {section_name} section from a 10-K and provide a brief TLDR with the bottom line up front for investors.
 
 Document:
-{text[:4000]}
+{text[:2000]}
 
 Summary:"""
 
@@ -48,9 +49,9 @@ Summary:"""
         outputs = model.generate(  # type: ignore
             input_ids=inputs["input_ids"],
             attention_mask=inputs.get("attention_mask"),
-            max_new_tokens=150,
-            temperature=0.6,
-            top_p=0.8,
+            max_new_tokens=100,
+            temperature=0.5,
+            top_p=0.7,
             do_sample=True,
             early_stopping=True,
             repetition_penalty=1.2,

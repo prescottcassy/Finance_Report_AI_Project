@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Import extract_10k
 extract_path = os.path.join(os.path.dirname(__file__), '..', 'scripts', 'extract_10k.py')
@@ -120,8 +121,8 @@ def _analyze_async(job_id, file_content, filename, company):
             print(f"[{job_id}] Extraction complete: {time.time() - extract_start:.2f}s")
             jobs[job_id]["progress"] = 30
 
-            # Step 2 — summarize each section
-            print(f"[{job_id}] Generating summaries...")
+            # Step 2 — summarize each section IN PARALLEL
+            print(f"[{job_id}] Generating summaries in parallel...")
             jobs[job_id]["status"] = "summarizing"
             
             sections_map = {
@@ -134,21 +135,30 @@ def _analyze_async(job_id, file_content, filename, company):
             sections = []
             all_text = ""
 
-            for idx, (title, fname) in enumerate(sections_map.items()):
-                path = os.path.join(output_folder, fname)
-                if os.path.exists(path):
-                    with open(path, "r", encoding="utf-8") as f:
-                        text = f.read()
-                    sum_start = time.time()
-                    print(f"[{job_id}] Summarizing {title}...")
-                    summary = generate_summary(text, title)
-                    print(f"[{job_id}] {title} summary: {time.time() - sum_start:.2f}s")
-                    sections.append({"title": title, "summary": summary})
-                    all_text += f"\n\n{title}:\n{summary}"
-                else:
-                    sections.append({"title": title, "summary": "Section not found."})
-                
-                jobs[job_id]["progress"] = 30 + (idx + 1) * 12
+            # Generate all summaries in parallel
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = {}
+                for title, fname in sections_map.items():
+                    path = os.path.join(output_folder, fname)
+                    if os.path.exists(path):
+                        with open(path, "r", encoding="utf-8") as f:
+                            text = f.read()
+                        future = executor.submit(generate_summary, text, title)
+                        futures[future] = (title, text)
+
+                # Collect results as they complete
+                for future in as_completed(futures):
+                    title, text = futures[future]
+                    try:
+                        summary = future.result(timeout=120)
+                        sections.append({"title": title, "summary": summary})
+                        all_text += f"\n\n{title}:\n{summary}"
+                        print(f"[{job_id}] ✓ {title} summary complete")
+                    except Exception as e:
+                        print(f"[{job_id}] ✗ {title} summary failed: {e}")
+                        sections.append({"title": title, "summary": f"Error: {str(e)}"})
+
+            jobs[job_id]["progress"] = 65
 
             # Step 3 — generate BLUF + narrative
             print(f"[{job_id}] Generating BLUF and narrative...")
