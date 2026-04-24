@@ -58,6 +58,10 @@ def analyze():
     if not file:
         return jsonify({"error": "No file provided"}), 400
 
+    # Read file content immediately while request context is active
+    file_content = file.read()
+    filename = file.filename or "10k.pdf"
+
     # Create job ID
     job_id = f"{company}_{datetime.now().timestamp()}"
     jobs[job_id] = {"status": "starting", "progress": 0, "result": None, "error": None}
@@ -65,7 +69,7 @@ def analyze():
     # Run analysis in background thread
     thread = threading.Thread(
         target=_analyze_async,
-        args=(job_id, file, company),
+        args=(job_id, file_content, filename, company),
         daemon=True
     )
     thread.start()
@@ -90,23 +94,30 @@ def get_job_status(job_id):
 
     return jsonify(response)
 
-def _analyze_async(job_id, file, company):
+def _analyze_async(job_id, file_content, filename, company):
     """Run analysis in background and update job status"""
+    start_time = time.time()
     try:
         jobs[job_id]["status"] = "extracting"
         jobs[job_id]["progress"] = 10
 
         # Use temp directory
         with tempfile.TemporaryDirectory() as tmpdir:
-            pdf_path = os.path.join(tmpdir, "10k.pdf")
+            pdf_path = os.path.join(tmpdir, filename)
             output_folder = os.path.join(tmpdir, "extracted")
             os.makedirs(output_folder, exist_ok=True)
 
-            file.save(pdf_path)
+            # Write file content to disk
+            write_start = time.time()
+            with open(pdf_path, "wb") as f:
+                f.write(file_content)
+            print(f"[{job_id}] File write: {time.time() - write_start:.2f}s")
 
             # Step 1 — extract sections from uploaded file
-            print(f"[{job_id}] Extracting sections...")
+            extract_start = time.time()
+            print(f"[{job_id}] Starting extraction...")
             extract_10k_sections(pdf_path, output_folder)
+            print(f"[{job_id}] Extraction complete: {time.time() - extract_start:.2f}s")
             jobs[job_id]["progress"] = 30
 
             # Step 2 — summarize each section
@@ -128,8 +139,10 @@ def _analyze_async(job_id, file, company):
                 if os.path.exists(path):
                     with open(path, "r", encoding="utf-8") as f:
                         text = f.read()
+                    sum_start = time.time()
                     print(f"[{job_id}] Summarizing {title}...")
                     summary = generate_summary(text, title)
+                    print(f"[{job_id}] {title} summary: {time.time() - sum_start:.2f}s")
                     sections.append({"title": title, "summary": summary})
                     all_text += f"\n\n{title}:\n{summary}"
                 else:
@@ -142,10 +155,14 @@ def _analyze_async(job_id, file, company):
             jobs[job_id]["status"] = "generating"
             jobs[job_id]["progress"] = 75
             
+            bluf_start = time.time()
             bluf = generate_bluf(all_text)
+            print(f"[{job_id}] BLUF generation: {time.time() - bluf_start:.2f}s")
             jobs[job_id]["progress"] = 85
             
+            narrative_start = time.time()
             narrative = generate_narrative(all_text)
+            print(f"[{job_id}] Narrative generation: {time.time() - narrative_start:.2f}s")
             jobs[job_id]["progress"] = 95
 
             # Success
@@ -161,7 +178,8 @@ def _analyze_async(job_id, file, company):
             jobs[job_id]["status"] = "complete"
             jobs[job_id]["progress"] = 100
 
-            print(f"[{job_id}] ✓ Analysis complete")
+            total_time = time.time() - start_time
+            print(f"[{job_id}] ✓ Analysis complete in {total_time:.2f}s")
 
     except Exception as e:
         print(f"[{job_id}] ✗ Error: {e}")

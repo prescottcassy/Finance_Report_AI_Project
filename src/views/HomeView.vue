@@ -88,7 +88,7 @@ async function handleUpload() {
     // Step 2: Poll for job completion
     let jobComplete = false
     let pollCount = 0
-    const maxPolls = 300 // 5 minutes with 1 second intervals
+    const maxPolls = 1200 // 20 minutes with 1 second intervals
 
     while (!jobComplete && pollCount < maxPolls) {
       await new Promise(resolve => setTimeout(resolve, 1000)) // Wait 1 second between polls
@@ -99,15 +99,15 @@ async function handleUpload() {
 
       // Update progress and message based on status
       if (statusData.status === 'extracting') {
-        loadingMessage.value = 'Extracting sections...'
+        loadingMessage.value = 'Extracting 10-K sections from PDF...'
       } else if (statusData.status === 'summarizing') {
-        loadingMessage.value = 'Generating AI summaries...'
+        loadingMessage.value = 'Generating AI summaries (this takes time)...'
       } else if (statusData.status === 'generating') {
         loadingMessage.value = 'Creating investor narrative...'
       }
       
       loadingProgress.value = Math.max(loadingProgress.value, statusData.progress)
-      console.log(`Job status: ${statusData.status} (${statusData.progress}%)`)
+      console.log(`Job status: ${statusData.status} (${statusData.progress}%) - ${Math.floor(pollCount / 60)}m ${pollCount % 60}s elapsed`)
 
       if (statusData.status === 'complete') {
         jobComplete = true
@@ -120,7 +120,7 @@ async function handleUpload() {
     }
 
     if (!jobComplete) {
-      throw new Error('Analysis timed out after 5 minutes')
+      throw new Error('Analysis timed out after 20 minutes')
     }
   } catch (err) {
     console.error(err)

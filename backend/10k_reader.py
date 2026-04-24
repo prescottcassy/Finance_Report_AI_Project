@@ -48,12 +48,13 @@ Summary:"""
         outputs = model.generate(  # type: ignore
             input_ids=inputs["input_ids"],
             attention_mask=inputs.get("attention_mask"),
-            max_new_tokens=300,
-            temperature=0.7,
-            top_p=0.95,
+            max_new_tokens=150,
+            temperature=0.6,
+            top_p=0.8,
             do_sample=True,
             early_stopping=True,
             repetition_penalty=1.2,
+            use_cache=True,
         )
 
     result = tokenizer.decode(outputs[0], skip_special_tokens=True)
