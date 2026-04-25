@@ -23,7 +23,6 @@ Finance_Report_AI_Project is a full-stack 10-K analysis app that turns SEC filin
 - `backend/` Flask API, report generation, and AI summarization
 - `scripts/` 10-K extraction and section parsing logic
 - `src/` Vue frontend
-- `data/` sample filings and extracted outputs
 
 ## Setup
 
