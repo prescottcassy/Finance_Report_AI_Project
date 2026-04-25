@@ -254,14 +254,16 @@ def create_pdf_report(
         story.append(metrics_table)
         story.append(Spacer(1, 0.48*inch))
 
-    prepared_meta = (
-        f"Prepared by: {team_line}\n"
-        f"Date: {cover_date}\n"
-        f"Course: {cover_course}\n"
-        f"Professor {cover_professor}"
-    )
+    cover_course_single_line = " ".join(str(cover_course).splitlines()).strip()
+    cover_meta_lines = [
+        f"Prepared by: {team_line}",
+        f"Date: {cover_date}",
+        f"Course: {cover_course_single_line}",
+        f"Professor: {cover_professor}",
+    ]
     story.append(Spacer(1, 0.04*inch))
-    story.append(Paragraph(_escape_paragraph_text(prepared_meta), cover_meta_style))
+    for line in cover_meta_lines:
+        story.append(Paragraph(_escape_paragraph_text(line), cover_meta_style))
 
     story.append(PageBreak())
 
