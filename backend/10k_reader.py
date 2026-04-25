@@ -186,13 +186,38 @@ def _clean_output_text(text: str) -> str:
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
+def _ensure_complete_sentence(text: str, max_completion_tokens: int = 120) -> str:
+    """If model output looks truncated, request a short continuation to finish cleanly."""
+    cleaned = _clean_output_text(text)
+    if not cleaned:
+        return cleaned
+
+    if cleaned.endswith((".", "!", "?", '"')):
+        return cleaned
+
+    try:
+        continuation_prompt = f"""The text below appears truncated. Continue from the exact point where it ends and finish the final sentence.
+Requirements:
+- Return only the continuation text.
+- Do not restart or repeat prior text.
+- End with a complete sentence.
+
+Current text:
+{cleaned}
+
+Continuation:"""
+        continuation = _run_inference(continuation_prompt, max_new_tokens=max_completion_tokens)
+        continuation = _clean_output_text(continuation.split("Continuation:")[-1])
+        merged = f"{cleaned} {continuation}".strip()
+        return _clean_output_text(merged)
+    except Exception:
+        return cleaned
+
 
 # ── AI generation functions ───────────────────────────────────────────────────
 
-def generate_summary(text: str, section_name: str) -> str:
-    if not text or len(text.strip()) < 100:
-        return f"[{section_name} section not found or too short to analyze]"
-
+def build_summary_prompt(text: str, section_name: str) -> tuple[str, int]:
+    """Build the exact summary prompt and token budget used for inference."""
     # Long-form limits so total report is approximately five pages.
     section_max_tokens = int(os.getenv("SECTION_SUMMARY_MAX_TOKENS", "700"))
     regular_context_chars = int(os.getenv("SECTION_SUMMARY_CONTEXT_CHARS", "2800"))
@@ -201,7 +226,7 @@ def generate_summary(text: str, section_name: str) -> str:
     financial_target_words = int(os.getenv("FINANCIAL_SUMMARY_TARGET_WORDS", "520"))
 
     if "financial" in section_name.lower() or "income" in section_name.lower():
-        prompt = f"""Analyze this {section_name} section from a 10-K filing and provide detailed financial insights.
+        prompt = f"""You are a fun financial storyteller. Analyze this {section_name} section from a 10-K filing and turn it into a engaging story for someone who knows nothing about finance. Write it like you're explaining it to a curious friend over coffee, no jargon, no boring tables. If you use any financial word, explain it immediately in simple terms.  
 Requirements:
 - Quote specific numeric figures when available.
 - Include at least 5 concrete figures (e.g., revenue, operating income, net income, cash flow, assets/liabilities) if present.
@@ -218,7 +243,7 @@ Content:
 
 Financial Analysis:"""
     else:
-        prompt = f"""Analyze this {section_name} section from a 10-K filing and provide a detailed investor summary.
+        prompt = f"""You are a fun financial storyteller. Analyze this {section_name} section from a 10-K filing and turn it into a engaging story for someone who knows nothing about finance. Write it like you're explaining it to a curious friend over coffee, no jargon, no boring tables. If you use any financial word, explain it immediately in simple terms.
 Requirements:
 - Include concrete facts from the text.
 - Prioritize implications for revenue, margins, growth, and risk.
@@ -232,21 +257,11 @@ Content:
 
 Summary:"""
 
-    try:
-        result = _run_inference(prompt, max_new_tokens=section_max_tokens)
-        for delimiter in ["Financial Analysis:", "Summary:"]:
-            if delimiter in result:
-                return _clean_output_text(result.split(delimiter)[-1])
-        return _clean_output_text(result)
-    except Exception as e:
-        print(f"Error generating summary for {section_name}: {e}")
-        return f"[Error generating summary: {str(e)[:100]}]"
+    return prompt, section_max_tokens
 
-
-def generate_bluf(all_summaries: str, company_name: str = "the company") -> str:
-    if not all_summaries or len(all_summaries.strip()) < 50:
-        return "[Insufficient data for BLUF generation]"
-    prompt = f"""Based on this 10-K analysis for {company_name}, provide a direct investment bottom line in 1-2 sentences.
+def build_bluf_prompt(all_summaries: str, company_name: str = "the company") -> tuple[str, int]:
+    """Build the exact BLUF prompt and token budget used for inference."""
+    prompt = f"""Based on this 10-K analysis for {company_name}, provide a direct investment bottom line using plain language that also answers the following question: : "Why should I care about this?" Write it from 3 perspectives — an employee, a customer, and a small investor.
 Requirements:
 - Mention the company name: {company_name}
 - Include one key supporting reason.
@@ -257,20 +272,14 @@ Key Sections:
 {all_summaries[:1200]}
 
 Investment Decision:"""
-    try:
-        result = _run_inference(prompt, max_new_tokens=120)
-        return _clean_output_text(result.split("Investment Decision:")[-1])
-    except Exception as e:
-        print(f"Error generating BLUF: {e}")
-        return f"[Error generating BLUF: {str(e)[:100]}]"
+    return prompt, 220
 
 
-def generate_narrative(all_summaries: str, company_name: str = "the company") -> str:
-    if not all_summaries or len(all_summaries.strip()) < 50:
-        return "[Insufficient data for narrative generation]"
+def build_narrative_prompt(all_summaries: str, company_name: str = "the company") -> tuple[str, int]:
+    """Build the exact narrative prompt and token budget used for inference."""
     narrative_target_words = int(os.getenv("NARRATIVE_TARGET_WORDS", "700"))
     narrative_max_tokens = int(os.getenv("NARRATIVE_MAX_TOKENS", "950"))
-    prompt = f"""Write a comprehensive investor narrative for {company_name} based on its 10-K filing.
+    prompt = f"""Write a comprehensive investor narrative for {company_name} based on its 10-K filing for a complete beginner that doesn't use jargon. Write it like you're explaining it to a curious friend over coffee, no jargon, no boring tables. If you use any financial word, explain it immediately in simple terms. Structure it like this: first, how the company makes money → then where it spent money → then what was left over → then one fun takeaway at the end. Compare big numbers to everyday. 
 Requirements:
 - Mention the company name: {company_name}
 - Connect strategy, risks, and financial trajectory.
@@ -283,9 +292,46 @@ Key Sections Summary:
 {all_summaries[:4500]}
 
 The Story:"""
+    return prompt, narrative_max_tokens
+
+def generate_summary(text: str, section_name: str) -> str:
+    if not text or len(text.strip()) < 100:
+        return f"[{section_name} section not found or too short to analyze]"
+    prompt, section_max_tokens = build_summary_prompt(text, section_name)
+
+    try:
+        result = _run_inference(prompt, max_new_tokens=section_max_tokens)
+        for delimiter in ["Financial Analysis:", "Summary:"]:
+            if delimiter in result:
+                parsed = _clean_output_text(result.split(delimiter)[-1])
+                return _ensure_complete_sentence(parsed, max_completion_tokens=180)
+        return _ensure_complete_sentence(_clean_output_text(result), max_completion_tokens=180)
+    except Exception as e:
+        print(f"Error generating summary for {section_name}: {e}")
+        return f"[Error generating summary: {str(e)[:100]}]"
+
+
+def generate_bluf(all_summaries: str, company_name: str = "the company") -> str:
+    if not all_summaries or len(all_summaries.strip()) < 50:
+        return "[Insufficient data for BLUF generation]"
+    prompt, bluf_max_tokens = build_bluf_prompt(all_summaries, company_name)
+    try:
+        result = _run_inference(prompt, max_new_tokens=bluf_max_tokens)
+        bluf_text = _clean_output_text(result.split("Investment Decision:")[-1])
+        return _ensure_complete_sentence(bluf_text, max_completion_tokens=220)
+    except Exception as e:
+        print(f"Error generating BLUF: {e}")
+        return f"[Error generating BLUF: {str(e)[:100]}]"
+
+
+def generate_narrative(all_summaries: str, company_name: str = "the company") -> str:
+    if not all_summaries or len(all_summaries.strip()) < 50:
+        return "[Insufficient data for narrative generation]"
+    prompt, narrative_max_tokens = build_narrative_prompt(all_summaries, company_name)
     try:
         result = _run_inference(prompt, max_new_tokens=narrative_max_tokens)
-        return _clean_output_text(result.split("The Story:")[-1])
+        parsed = _clean_output_text(result.split("The Story:")[-1])
+        return _ensure_complete_sentence(parsed, max_completion_tokens=220)
     except Exception as e:
         print(f"Error generating narrative: {e}")
         return f"[Error generating narrative: {str(e)[:100]}]"
