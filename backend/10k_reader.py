@@ -1,68 +1,676 @@
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from huggingface_hub import login
-import torch
-from concurrent.futures import ThreadPoolExecutor, as_completed
+"""
+10k_reader.py
 
-login()
+Reads a 10-K PDF, extracts key sections, generates AI summaries using
+Anthropic's API, and produces a downloadable investment research PDF report.
 
-print(f"CUDA Available: {torch.cuda.is_available()}")
+Usage:
+    python 10k_reader.py <path_to_10k.pdf> [company_name]
 
-model_id = "mistralai/Mistral-7B-Instruct-v0.3"
-tokenizer = None
-model = None
+Output:
+    <company_name>_10K_Report.pdf  (in same folder as input PDF, or cwd)
+"""
+
+import sys
+import os
+import textwrap
+import re
+import importlib.util
+from datetime import datetime
+from typing import Optional
+
+from anthropic import Anthropic
+from dotenv import load_dotenv
+
+import importlib.util
+
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+load_dotenv(os.path.join(project_root, ".env"))
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+
+extract_path = os.path.join(os.path.dirname(__file__), '..', 'scripts', 'extract_10k.py')
+spec = importlib.util.spec_from_file_location("extract_10k", extract_path)
+
+def _missing_extract(*args, **kwargs):
+    raise RuntimeError("extract_10k could not be loaded.")
+
+extract_10k_sections = _missing_extract
+if spec and spec.loader:
+    extract_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(extract_module)
+    extract_10k_sections = extract_module.extract_10k_sections
+
+# ── PDF report builder ────────────────────────────────────────────────────────
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.lib import colors
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, PageBreak,
+    Table, TableStyle, HRFlowable,
+)
+from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_JUSTIFY
+
+
+# ── Model setup ───────────────────────────────────────────────────────────────
+anthropic_client = None
+anthropic_model = os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-latest")
+fallback_models = [
+    "claude-3-5-haiku-latest",
+    "claude-3-5-sonnet-latest",
+    "claude-3-haiku-20240307",
+]
+resolved_model = None
+
+
+def _candidate_models() -> list[str]:
+    ordered = [anthropic_model] + fallback_models
+    deduped = []
+    for model_name in ordered:
+        if model_name and model_name not in deduped:
+            deduped.append(model_name)
+    return deduped
+
+
+def _discover_available_models() -> list[str]:
+    """Discover models available to the current Anthropic API key."""
+    global anthropic_client
+    if anthropic_client is None:
+        return []
+
+    try:
+        models_page = anthropic_client.models.list()  # type: ignore[union-attr]
+        discovered = []
+        for model in models_page.data:
+            model_id = getattr(model, "id", None)
+            if model_id:
+                discovered.append(model_id)
+        return discovered
+    except Exception as e:
+        print(f"Could not discover Anthropic models: {e}")
+        return []
+
 
 def load_model():
-    global tokenizer, model
-    print("Loading Mistral model...")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-    ).to(device)
-    print("Model loaded.")
+    global anthropic_client
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY is not set.")
 
-def generate_summary(text, section_name):
-    if tokenizer is None or model is None:
+    anthropic_client = Anthropic(api_key=api_key)
+    print(f"Anthropic client initialized with model: {anthropic_model}")
+
+
+def _run_inference(prompt: str, max_new_tokens: int = 170) -> str:
+    global anthropic_client, resolved_model
+    if anthropic_client is None:
         load_model()
 
-    prompt = f"""Analyze this {section_name} section from a 10-K and provide a brief TLDR with the bottom line up front for investors.
+    last_error = None
+    # If we already found a working model, use it first.
+    model_candidates = []
+    if resolved_model:
+        model_candidates.append(resolved_model)
 
-Document:
-{text[:2000]}
+    # User-configured and fallback candidates.
+    model_candidates.extend(_candidate_models())
+
+    # Dynamically discovered account-available models.
+    model_candidates.extend(_discover_available_models())
+
+    deduped_candidates = []
+    for model_name in model_candidates:
+        if model_name and model_name not in deduped_candidates:
+            deduped_candidates.append(model_name)
+
+    for model_name in deduped_candidates:
+        try:
+            continuation_rounds = int(os.getenv("ANTHROPIC_CONTINUATION_ROUNDS", "2"))
+            messages = [{"role": "user", "content": prompt}]
+            text_parts = []
+
+            for _ in range(continuation_rounds + 1):
+                response = anthropic_client.messages.create(  # type: ignore[union-attr]
+                    model=model_name,
+                    max_tokens=max_new_tokens,
+                    messages=messages,  # type: ignore[arg-type]
+                )
+
+                chunk_parts = []
+                for block in response.content:
+                    block_text = getattr(block, "text", None)
+                    if block_text:
+                        chunk_parts.append(block_text)
+
+                chunk = "\n".join(chunk_parts).strip()
+                if chunk:
+                    text_parts.append(chunk)
+
+                stop_reason = getattr(response, "stop_reason", None)
+                if stop_reason != "max_tokens":
+                    break
+
+                if not chunk:
+                    break
+
+                messages.append({"role": "assistant", "content": chunk})
+                messages.append({
+                    "role": "user",
+                    "content": "Continue exactly where you left off. Do not restart, do not summarize what you already wrote, and do not repeat prior text.",
+                })
+
+            # Remember working model for subsequent calls in this process.
+            resolved_model = model_name
+            if model_name != anthropic_model:
+                print(f"Anthropic model fallback in use: {model_name}")
+            return "\n".join(text_parts).strip()
+        except Exception as e:
+            last_error = e
+            error_text = str(e).lower()
+            # Retry only for model-not-found style failures.
+            if "not_found_error" in error_text or "model:" in error_text:
+                continue
+            raise
+
+    raise RuntimeError(f"All configured Anthropic models failed. Last error: {last_error}")
+
+
+def _clean_output_text(text: str) -> str:
+    """Normalize model output to plain readable text (remove markdown artifacts)."""
+    if not text:
+        return ""
+
+    cleaned = text.replace("**", "").replace("`", "")
+    cleaned = re.sub(r"^\s{0,3}#{1,6}\s*", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"^\s*[-*]\s+", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+# ── AI generation functions ───────────────────────────────────────────────────
+
+def generate_summary(text: str, section_name: str) -> str:
+    if not text or len(text.strip()) < 100:
+        return f"[{section_name} section not found or too short to analyze]"
+
+    # Long-form limits so total report is approximately five pages.
+    section_max_tokens = int(os.getenv("SECTION_SUMMARY_MAX_TOKENS", "700"))
+    regular_context_chars = int(os.getenv("SECTION_SUMMARY_CONTEXT_CHARS", "2800"))
+    financial_context_chars = int(os.getenv("FINANCIAL_SUMMARY_CONTEXT_CHARS", "5000"))
+    regular_target_words = int(os.getenv("SECTION_SUMMARY_TARGET_WORDS", "420"))
+    financial_target_words = int(os.getenv("FINANCIAL_SUMMARY_TARGET_WORDS", "520"))
+
+    if "financial" in section_name.lower() or "income" in section_name.lower():
+        prompt = f"""Analyze this {section_name} section from a 10-K filing and provide detailed financial insights.
+Requirements:
+- Quote specific numeric figures when available.
+- Include at least 5 concrete figures (e.g., revenue, operating income, net income, cash flow, assets/liabilities) if present.
+- Explain year-over-year changes and operational drivers.
+- Highlight profitability, liquidity, and cash-flow implications.
+- If exact values are unavailable, say what is missing and still inferable.
+- Do not use placeholders like [Company Name].
+- Keep the response complete and detailed; do not end mid-sentence.
+- Target length: approximately {financial_target_words} words.
+- Return plain text only. Do not use markdown formatting, headings, hashtags, or asterisks.
+
+Content:
+{text[:financial_context_chars]}
+
+Financial Analysis:"""
+    else:
+        prompt = f"""Analyze this {section_name} section from a 10-K filing and provide a detailed investor summary.
+Requirements:
+- Include concrete facts from the text.
+- Prioritize implications for revenue, margins, growth, and risk.
+- Do not use placeholders like [Company Name].
+- Keep the response complete and detailed; do not end mid-sentence.
+- Target length: approximately {regular_target_words} words.
+- Return plain text only. Do not use markdown formatting, headings, hashtags, or asterisks.
+
+Content:
+{text[:regular_context_chars]}
 
 Summary:"""
 
-    messages = [{"role": "user", "content": prompt}]
-    inputs = tokenizer.apply_chat_template(
-        messages,
-        add_generation_prompt=True,
-        return_dict=True,
-        return_tensors="pt"
+    try:
+        result = _run_inference(prompt, max_new_tokens=section_max_tokens)
+        for delimiter in ["Financial Analysis:", "Summary:"]:
+            if delimiter in result:
+                return _clean_output_text(result.split(delimiter)[-1])
+        return _clean_output_text(result)
+    except Exception as e:
+        print(f"Error generating summary for {section_name}: {e}")
+        return f"[Error generating summary: {str(e)[:100]}]"
+
+
+def generate_bluf(all_summaries: str, company_name: str = "the company") -> str:
+    if not all_summaries or len(all_summaries.strip()) < 50:
+        return "[Insufficient data for BLUF generation]"
+    prompt = f"""Based on this 10-K analysis for {company_name}, provide a direct investment bottom line in 1-2 sentences.
+Requirements:
+- Mention the company name: {company_name}
+- Include one key supporting reason.
+- Do not use placeholders.
+- Return plain text only. Do not use markdown formatting, headings, hashtags, or asterisks.
+
+Key Sections:
+{all_summaries[:1200]}
+
+Investment Decision:"""
+    try:
+        result = _run_inference(prompt, max_new_tokens=120)
+        return _clean_output_text(result.split("Investment Decision:")[-1])
+    except Exception as e:
+        print(f"Error generating BLUF: {e}")
+        return f"[Error generating BLUF: {str(e)[:100]}]"
+
+
+def generate_narrative(all_summaries: str, company_name: str = "the company") -> str:
+    if not all_summaries or len(all_summaries.strip()) < 50:
+        return "[Insufficient data for narrative generation]"
+    narrative_target_words = int(os.getenv("NARRATIVE_TARGET_WORDS", "700"))
+    narrative_max_tokens = int(os.getenv("NARRATIVE_MAX_TOKENS", "950"))
+    prompt = f"""Write a comprehensive investor narrative for {company_name} based on its 10-K filing.
+Requirements:
+- Mention the company name: {company_name}
+- Connect strategy, risks, and financial trajectory.
+- Include at least one specific figure or clearly state if figures are unavailable.
+- Do not use placeholders.
+- Target length: approximately {narrative_target_words} words.
+- Return plain text only. Do not use markdown formatting, headings, hashtags, or asterisks.
+
+Key Sections Summary:
+{all_summaries[:4500]}
+
+The Story:"""
+    try:
+        result = _run_inference(prompt, max_new_tokens=narrative_max_tokens)
+        return _clean_output_text(result.split("The Story:")[-1])
+    except Exception as e:
+        print(f"Error generating narrative: {e}")
+        return f"[Error generating narrative: {str(e)[:100]}]"
+
+
+# ── PDF report builder ────────────────────────────────────────────────────────
+
+def _build_styles():
+    base   = getSampleStyleSheet()
+    styles = {}
+
+    styles["cover_title"] = ParagraphStyle(
+        "cover_title", parent=base["Title"],
+        fontSize=28, leading=34, textColor=colors.HexColor("#1F3864"),
+        spaceAfter=6, alignment=TA_CENTER,
+    )
+    styles["cover_sub"] = ParagraphStyle(
+        "cover_sub", parent=base["Normal"],
+        fontSize=13, leading=18, textColor=colors.HexColor("#444444"),
+        spaceAfter=4, alignment=TA_CENTER,
+    )
+    styles["cover_meta"] = ParagraphStyle(
+        "cover_meta", parent=base["Normal"],
+        fontSize=10, textColor=colors.HexColor("#888888"),
+        alignment=TA_CENTER,
+    )
+    styles["section_heading"] = ParagraphStyle(
+        "section_heading", parent=base["Heading1"],
+        fontSize=14, leading=18, textColor=colors.white,
+        backColor=colors.HexColor("#1F3864"),
+        spaceBefore=14, spaceAfter=8,
+        leftIndent=-6, rightIndent=-6,
+        borderPad=6,
+    )
+    styles["sub_heading"] = ParagraphStyle(
+        "sub_heading", parent=base["Heading2"],
+        fontSize=11, leading=14, textColor=colors.HexColor("#1F3864"),
+        spaceBefore=10, spaceAfter=4,
+        borderWidth=0, borderColor=colors.HexColor("#1F3864"),
+    )
+    styles["body"] = ParagraphStyle(
+        "body", parent=base["Normal"],
+        fontSize=9.5, leading=14, textColor=colors.HexColor("#222222"),
+        spaceAfter=6, alignment=TA_JUSTIFY,
+    )
+    styles["bluf_box"] = ParagraphStyle(
+        "bluf_box", parent=base["Normal"],
+        fontSize=11, leading=16, textColor=colors.HexColor("#1F3864"),
+        backColor=colors.HexColor("#D6E4F0"),
+        spaceBefore=6, spaceAfter=10,
+        leftIndent=12, rightIndent=12,
+        borderPad=10,
+        borderWidth=1, borderColor=colors.HexColor("#1F3864"),
+    )
+    styles["footer"] = ParagraphStyle(
+        "footer", parent=base["Normal"],
+        fontSize=7.5, textColor=colors.HexColor("#AAAAAA"),
+        alignment=TA_CENTER,
+    )
+    return styles
+
+
+def _wrap_text(text: str, width: int = 90) -> str:
+    """Wrap long AI-generated text to avoid overflow."""
+    lines = []
+    for paragraph in text.split("\n"):
+        if paragraph.strip():
+            lines.append(textwrap.fill(paragraph.strip(), width=width))
+        else:
+            lines.append("")
+    return "\n".join(lines)
+
+
+def _safe_para(text: str, style) -> Paragraph:
+    """Create a Paragraph, escaping problematic XML characters."""
+    safe = (text
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;"))
+    return Paragraph(safe, style)
+
+
+def build_pdf_report(
+    company_name: str,
+    bluf: str,
+    narrative: str,
+    summaries: dict,           # {section_label: summary_text}
+    financial_table_rows: list,# list of [label, val1, val2, ...] rows for key metrics
+    output_path: str,
+    periods: Optional[list] = None,
+):
+    """
+    Build the PDF investment report.
+
+    Args:
+        company_name:         Company name string
+        bluf:                 Bottom-Line-Up-Front sentence(s)
+        narrative:            Investor narrative paragraph
+        summaries:            Dict of section_label → AI summary text
+        financial_table_rows: List of rows for the key metrics table
+        output_path:          Where to write the PDF
+        periods:              List of fiscal year period labels e.g. ["FY2023","FY2022"]
+    """
+    doc    = SimpleDocTemplate(
+        output_path, pagesize=letter,
+        leftMargin=0.85*inch, rightMargin=0.85*inch,
+        topMargin=0.9*inch,   bottomMargin=0.9*inch,
+    )
+    styles = _build_styles()
+    story  = []
+    now    = datetime.now().strftime("%B %d, %Y")
+
+    # ── Cover page ────────────────────────────────────────────────────────
+    story.append(Spacer(1, 1.2 * inch))
+    story.append(_safe_para(f"{company_name}", styles["cover_title"]))
+    story.append(_safe_para("10-K Investment Research Report", styles["cover_sub"]))
+    story.append(Spacer(1, 0.2 * inch))
+    story.append(HRFlowable(width="60%", thickness=2, color=colors.HexColor("#1F3864"),
+                              hAlign="CENTER"))
+    story.append(Spacer(1, 0.2 * inch))
+    story.append(_safe_para(f"Generated: {now}", styles["cover_meta"]))
+    story.append(_safe_para("Source: SEC 10-K Filing  |  AI Analysis: Anthropic API",
+                             styles["cover_meta"]))
+    story.append(Spacer(1, 0.5 * inch))
+    story.append(_safe_para(
+        "DISCLAIMER: This report is generated by an AI system for informational purposes only. "
+        "It does not constitute investment advice. Always consult a qualified financial advisor "
+        "before making investment decisions.",
+        ParagraphStyle("disc", parent=styles["footer"], fontSize=8,
+                       textColor=colors.HexColor("#888888"), alignment=TA_CENTER)
+    ))
+    story.append(PageBreak())
+
+    # ── BLUF box ──────────────────────────────────────────────────────────
+    story.append(_safe_para("⚡ Bottom Line", styles["section_heading"]))
+    story.append(Spacer(1, 4))
+    story.append(_safe_para(_wrap_text(bluf), styles["bluf_box"]))
+    story.append(Spacer(1, 10))
+
+    # ── Investment Narrative ──────────────────────────────────────────────
+    story.append(_safe_para("The Investment Story", styles["section_heading"]))
+    story.append(Spacer(1, 4))
+    story.append(_safe_para(_wrap_text(narrative), styles["body"]))
+    story.append(Spacer(1, 10))
+
+    # ── Key Financial Metrics table ───────────────────────────────────────
+    if financial_table_rows:
+        story.append(_safe_para("Key Financial Metrics", styles["section_heading"]))
+        story.append(Spacer(1, 4))
+
+        period_headers = periods or []
+        col_headers = ["Metric"] + period_headers
+        table_data  = [col_headers] + financial_table_rows
+
+        col_count  = len(col_headers)
+        label_w    = 2.5 * inch
+        val_w      = (6.3 * inch - label_w) / max(col_count - 1, 1)
+        col_widths = [label_w] + [val_w] * (col_count - 1)
+
+        tbl = Table(table_data, colWidths=col_widths, repeatRows=1)
+        tbl.setStyle(TableStyle([
+            # Header row
+            ("BACKGROUND",  (0, 0), (-1, 0),  colors.HexColor("#1F3864")),
+            ("TEXTCOLOR",   (0, 0), (-1, 0),  colors.white),
+            ("FONTNAME",    (0, 0), (-1, 0),  "Helvetica-Bold"),
+            ("FONTSIZE",    (0, 0), (-1, 0),  9),
+            ("ALIGN",       (1, 0), (-1, 0),  "RIGHT"),
+            ("ALIGN",       (0, 0), (0, 0),   "LEFT"),
+            ("BOTTOMPADDING",(0,0), (-1, 0),  6),
+            ("TOPPADDING",  (0, 0), (-1, 0),  6),
+            # Data rows
+            ("FONTNAME",    (0, 1), (-1, -1), "Helvetica"),
+            ("FONTSIZE",    (0, 1), (-1, -1), 9),
+            ("ALIGN",       (1, 1), (-1, -1), "RIGHT"),
+            ("ALIGN",       (0, 1), (0, -1),  "LEFT"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1),
+             [colors.white, colors.HexColor("#F0F5FB")]),
+            ("GRID",        (0, 0), (-1, -1), 0.4, colors.HexColor("#CCCCCC")),
+            ("TOPPADDING",  (0, 1), (-1, -1), 4),
+            ("BOTTOMPADDING",(0,1), (-1, -1), 4),
+        ]))
+        story.append(tbl)
+        story.append(Spacer(1, 14))
+
+    # ── Section summaries ─────────────────────────────────────────────────
+    section_labels = {
+        "businessOverview.txt":    "Business Overview (Item 1)",
+        "riskFactors.txt":         "Risk Factors (Item 1A)",
+        "managementDiscussion.txt":"Management Discussion & Analysis (Item 7)",
+        "incomeStatements.txt":    "Financial Statements (Item 8)",
+    }
+
+    for filename, label in section_labels.items():
+        summary = summaries.get(filename, "")
+        if not summary or summary.startswith("["):
+            continue
+        story.append(_safe_para(label, styles["section_heading"]))
+        story.append(Spacer(1, 4))
+        story.append(_safe_para(_wrap_text(summary), styles["body"]))
+        story.append(Spacer(1, 10))
+
+    # ── Footer note ───────────────────────────────────────────────────────
+    story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#CCCCCC")))
+    story.append(Spacer(1, 6))
+    story.append(_safe_para(
+        f"Report generated on {now} using Anthropic API. "
+        "Content is derived from SEC 10-K filings and is for informational purposes only.",
+        styles["footer"]
+    ))
+
+    doc.build(story)
+    print(f"✓ PDF report saved: {output_path}")
+    return output_path
+
+
+# ── Financial table helper ────────────────────────────────────────────────────
+
+def _format_value(val, is_pct=False):
+    """Format a float for display in the PDF table."""
+    if val is None:
+        return "—"
+    if is_pct:
+        return f"{val * 100:.1f}%"
+    # Values are stored as full dollars; display in millions
+    millions = val / 1_000_000
+    if abs(millions) >= 1000:
+        return f"${millions/1000:,.1f}B"
+    return f"${millions:,.0f}M"
+
+
+def _build_financial_table_rows(model) -> tuple[list, list]:
+    """
+    Extract key metrics from the FinancialModel into table rows and period headers.
+    Returns (rows, periods).
+    """
+    IS = model.income_statement
+    CF = model.cash_flow
+    BS = model.balance_sheet
+
+    periods = IS.periods or CF.periods or BS.periods or []
+
+    def get_is(name):  return IS.line_items.get(name, [])
+    def get_cf(name):  return CF.line_items.get(name, [])
+    def get_bs(name):  return BS.line_items.get(name, [])
+
+    def row(label, values, is_pct=False):
+        formatted = [_format_value(v, is_pct) for v in (values or [])]
+        return [label] + formatted
+
+    metrics = [
+        # Income Statement
+        ("── Income Statement", None, False),
+        row("Revenue",            get_is("Revenue")),
+        row("Gross Profit",       get_is("Gross Profit")),
+        row("Gross Margin %",     get_is("Gross Margin %"),    True),
+        row("EBITDA",             get_is("EBITDA")),
+        row("EBITDA Margin %",    get_is("EBITDA Margin %"),   True),
+        row("Operating Income",   get_is("Operating Income")),
+        row("Operating Margin %", get_is("Operating Margin %"),True),
+        row("Net Income",         get_is("Net Income")),
+        row("Net Margin %",       get_is("Net Margin %"),      True),
+        row("EPS (Diluted)",      get_is("EPS (Diluted)")),
+        # Cash Flow
+        ("── Cash Flow", None, False),
+        row("Operating Cash Flow",get_cf("Operating Cash Flow")),
+        row("Capex",              get_cf("Capex")),
+        row("Free Cash Flow",     get_cf("Free Cash Flow")),
+        row("FCF Margin %",       get_cf("FCF Margin %"),      True),
+        # Balance Sheet
+        ("── Balance Sheet", None, False),
+        row("Cash & Equivalents", get_bs("Cash & Equivalents")),
+        row("Total Assets",       get_bs("Total Assets")),
+        row("Total Debt",         get_bs("Long-Term Debt")),
+        row("Total Equity",       get_bs("Total Equity")),
+    ]
+
+    # Filter: keep rows with at least one real value; keep section headers
+    rows = []
+    for item in metrics:
+        if isinstance(item, tuple) and item[1] is None:
+            # Section header row
+            label = item[0]
+            rows.append([label] + [""] * len(periods))
+        else:
+            # Data row — only include if at least one value populated
+            if any(v != "—" for v in item[1:]):
+                rows.append(list(item))
+
+    return rows, periods
+
+
+# ── Main pipeline ─────────────────────────────────────────────────────────────
+
+def run(pdf_path: str, company_name: str = "", output_path: str = ""):
+    """
+    Full pipeline: extract → summarize → build PDF report.
+
+    Args:
+        pdf_path:     Path to the 10-K PDF
+        company_name: Optional override; derived from filename if blank
+        output_path:  Where to save the report PDF.
+                      Defaults to same directory as input PDF.
+    """
+    if not os.path.exists(pdf_path):
+        print(f"ERROR: File not found: {pdf_path}")
+        sys.exit(1)
+
+    # ── Step 1: Extract sections ──────────────────────────────────────────
+    result       = extract_10k_sections(pdf_path, company_name=company_name)
+    sections     = result["sections"]       # {filename: text}
+    company_name = result["company_name"]
+    output_folder= result["output_folder"]
+
+    # ── Step 2: Load financial model (if extractor ran) ───────────────────
+    financial_table_rows = []
+    periods              = []
+    helper_path = os.path.join(os.path.dirname(__file__), "financial_model_extractor.py")
+    if os.path.exists(helper_path):
+        try:
+            helper_spec = importlib.util.spec_from_file_location("financial_model_extractor", helper_path)
+            if helper_spec and helper_spec.loader:
+                helper_module = importlib.util.module_from_spec(helper_spec)
+                helper_spec.loader.exec_module(helper_module)
+                fin_model = helper_module.extract_financial_tables_structured(pdf_path)
+                helper_module._compute_derived_metrics(fin_model)
+                financial_table_rows, periods = _build_financial_table_rows(fin_model)
+        except Exception as e:
+            print(f"⚠ Could not load financial model for PDF table: {e}")
+
+    # ── Step 3: Generate AI summaries ─────────────────────────────────────
+    section_labels = {
+        "businessOverview.txt":    "Business Overview",
+        "riskFactors.txt":         "Risk Factors",
+        "managementDiscussion.txt":"MD&A",
+        "incomeStatements.txt":    "Financial Statements",
+    }
+
+    print("\nGenerating AI summaries...")
+    summaries = {}
+    for filename, label in section_labels.items():
+        text = sections.get(filename, "")
+        print(f"  Summarizing: {label}...")
+        summaries[filename] = generate_summary(text, label)
+
+    # ── Step 4: Generate BLUF and narrative ───────────────────────────────
+    combined = "\n\n".join(
+        f"=== {label} ===\n{summaries.get(filename, '')}"
+        for filename, label in section_labels.items()
+    )
+    print("  Generating BLUF...")
+    bluf      = generate_bluf(combined, company_name)
+    print("  Generating narrative...")
+    narrative = generate_narrative(combined, company_name)
+
+    # ── Step 5: Build PDF report ──────────────────────────────────────────
+    if not output_path:
+        pdf_dir     = os.path.dirname(os.path.abspath(pdf_path))
+        safe_name   = re.sub(r"[^\w\-]", "_", company_name)
+        output_path = os.path.join(pdf_dir, f"{safe_name}_10K_Report.pdf")
+
+    print(f"\nBuilding PDF report → {output_path}")
+    build_pdf_report(
+        company_name         = company_name,
+        bluf                 = bluf,
+        narrative            = narrative,
+        summaries            = summaries,
+        financial_table_rows = financial_table_rows,
+        output_path          = output_path,
+        periods              = periods,
     )
 
-    # Move inputs to same device as model
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    inputs = {k: v.to(device) for k, v in inputs.items()}
+    print(f"\n{'='*60}")
+    print(f"✓ Done!  Report: {output_path}")
+    print(f"{'='*60}")
+    return output_path
 
-    with torch.no_grad():
-        outputs = model.generate(  # type: ignore
-            input_ids=inputs["input_ids"],
-            attention_mask=inputs.get("attention_mask"),
-            max_new_tokens=100,
-            temperature=0.5,
-            top_p=0.7,
-            do_sample=True,
-            early_stopping=True,
-            repetition_penalty=1.2,
-            use_cache=True,
-        )
 
-    result = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    return result.split("Summary:")[-1].strip()
+# ── Entry point ───────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python 10k_reader.py <path_to_10k.pdf> [company_name] [output_report.pdf]")
+        sys.exit(1)
 
-def generate_bluf(all_summaries):
-    return generate_summary(all_summaries, "BLUF bottom line up front investor")
+    pdf_path     = sys.argv[1]
+    company_name = sys.argv[2] if len(sys.argv) > 2 else ""
+    output_path  = sys.argv[3] if len(sys.argv) > 3 else ""
 
-def generate_narrative(all_summaries):
-    return generate_summary(all_summaries, "storytelling investor narrative connecting all sections")
+    run(pdf_path, company_name, output_path)

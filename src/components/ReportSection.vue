@@ -51,7 +51,7 @@ function toggle() {
 
 h3 {
   margin: 0;
-  font-size: 1rem;
+  font-size: 1.2rem;
   font-weight: 500;
   color: #ffffff;
 }
@@ -70,7 +70,7 @@ span {
 p {
   margin: 0;
   color: #d1d5db;
-  line-height: 1.6;
-  font-size: 0.95rem;
+  line-height: 1.8;
+  font-size: 1.05rem;
 }
 </style>

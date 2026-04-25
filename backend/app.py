@@ -1,12 +1,13 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import os
 import importlib.util
 import tempfile
 import threading
 import time
+import re
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from pdf_generator import create_pdf_report
 
 # Import extract_10k
 extract_path = os.path.join(os.path.dirname(__file__), '..', 'scripts', 'extract_10k.py')
@@ -50,6 +51,52 @@ CORS(app, origins=["http://localhost:5173"])
 
 # Background job storage
 jobs = {}
+# PDF storage - maps job_id to PDF file path
+pdf_storage = {}
+pdf_output_dir = os.path.join(os.path.dirname(__file__), "generated_reports")
+os.makedirs(pdf_output_dir, exist_ok=True)
+
+
+def _build_financial_csv_context(output_folder):
+    """Collect numeric-heavy snippets from extracted financial CSVs."""
+    patterns = [
+        "income_statement.csv",
+        "consolidated_income_statement.csv",
+        "balance_sheet.csv",
+        "consolidated_balance_sheet.csv",
+        "cash_flows.csv",
+        "consolidated_cash_flows.csv",
+    ]
+
+    candidate_paths = []
+    for name in patterns:
+        candidate_paths.append(os.path.join(output_folder, name))
+
+    sections = []
+    for path in candidate_paths:
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                lines = [line.strip() for line in f if line.strip()]
+
+            # Keep rows that likely contain numeric values.
+            numeric_lines = [
+                line for line in lines
+                if re.search(r"\d", line)
+            ]
+            if not numeric_lines:
+                continue
+
+            snippet = "\n".join(numeric_lines[:80])
+            sections.append(f"\n--- {os.path.basename(path)} ---\n{snippet}")
+        except Exception as e:
+            print(f"[financial-csv] Could not read {path}: {e}")
+
+    if not sections:
+        return ""
+
+    return "\n\n[FINANCIAL TABLE EXCERPTS]\n" + "\n".join(sections)
 
 @app.route("/analyze", methods=["POST"])
 def analyze():
@@ -95,6 +142,17 @@ def get_job_status(job_id):
 
     return jsonify(response)
 
+@app.route("/download/<job_id>", methods=["GET"])
+def download_pdf(job_id):
+    if job_id not in pdf_storage:
+        return jsonify({"error": "PDF not found"}), 404
+    
+    pdf_path = pdf_storage[job_id]
+    if not os.path.exists(pdf_path):
+        return jsonify({"error": "PDF file not found"}), 404
+    
+    return send_file(pdf_path, as_attachment=True, download_name=f"{job_id}.pdf")
+
 def _analyze_async(job_id, file_content, filename, company):
     """Run analysis in background and update job status"""
     start_time = time.time()
@@ -117,12 +175,18 @@ def _analyze_async(job_id, file_content, filename, company):
             # Step 1 — extract sections from uploaded file
             extract_start = time.time()
             print(f"[{job_id}] Starting extraction...")
-            extract_10k_sections(pdf_path, output_folder)
-            print(f"[{job_id}] Extraction complete: {time.time() - extract_start:.2f}s")
+            try:
+                extract_10k_sections(pdf_path, output_folder)
+                print(f"[{job_id}] Extraction complete: {time.time() - extract_start:.2f}s")
+            except Exception as e:
+                print(f"[{job_id}] ✗ Extraction error: {e}")
+                import traceback
+                traceback.print_exc()
+                raise
             jobs[job_id]["progress"] = 30
 
-            # Step 2 — summarize each section IN PARALLEL
-            print(f"[{job_id}] Generating summaries in parallel...")
+            # Step 2 — summarize each section sequentially (more stable on single GPU)
+            print(f"[{job_id}] Generating summaries...")
             jobs[job_id]["status"] = "summarizing"
             
             sections_map = {
@@ -135,28 +199,38 @@ def _analyze_async(job_id, file_content, filename, company):
             sections = []
             all_text = ""
 
-            # Generate all summaries in parallel
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                futures = {}
-                for title, fname in sections_map.items():
-                    path = os.path.join(output_folder, fname)
-                    if os.path.exists(path):
-                        with open(path, "r", encoding="utf-8") as f:
-                            text = f.read()
-                        future = executor.submit(generate_summary, text, title)
-                        futures[future] = (title, text)
+            total_sections = len(sections_map)
+            completed_sections = 0
+            for title, fname in sections_map.items():
+                path = os.path.join(output_folder, fname)
+                if not os.path.exists(path):
+                    sections.append({"title": title, "summary": "[Section file not found]"})
+                    completed_sections += 1
+                    continue
 
-                # Collect results as they complete
-                for future in as_completed(futures):
-                    title, text = futures[future]
-                    try:
-                        summary = future.result(timeout=120)
-                        sections.append({"title": title, "summary": summary})
-                        all_text += f"\n\n{title}:\n{summary}"
-                        print(f"[{job_id}] ✓ {title} summary complete")
-                    except Exception as e:
-                        print(f"[{job_id}] ✗ {title} summary failed: {e}")
-                        sections.append({"title": title, "summary": f"Error: {str(e)}"})
+                with open(path, "r", encoding="utf-8") as f:
+                    text = f.read()
+
+                # Financials: append numeric table excerpts so model sees actual 10-K numbers.
+                if title == "Financials":
+                    csv_context = _build_financial_csv_context(output_folder)
+                    if csv_context:
+                        text = text + "\n\n" + csv_context
+
+                text_size = len(text.strip())
+                print(f"[{job_id}] {title}: {text_size} characters")
+
+                try:
+                    summary = generate_summary(text, title)
+                    sections.append({"title": title, "summary": summary})
+                    all_text += f"\n\n{title}:\n{summary}"
+                    print(f"[{job_id}] ✓ {title} summary complete")
+                except Exception as e:
+                    print(f"[{job_id}] ✗ {title} summary failed: {e}")
+                    sections.append({"title": title, "summary": f"Error: {str(e)}"})
+
+                completed_sections += 1
+                jobs[job_id]["progress"] = min(65, 30 + int((completed_sections / total_sections) * 35))
 
             jobs[job_id]["progress"] = 65
 
@@ -166,14 +240,34 @@ def _analyze_async(job_id, file_content, filename, company):
             jobs[job_id]["progress"] = 75
             
             bluf_start = time.time()
-            bluf = generate_bluf(all_text)
+            bluf = generate_bluf(all_text, company)
             print(f"[{job_id}] BLUF generation: {time.time() - bluf_start:.2f}s")
             jobs[job_id]["progress"] = 85
             
             narrative_start = time.time()
-            narrative = generate_narrative(all_text)
+            narrative = generate_narrative(all_text, company)
             print(f"[{job_id}] Narrative generation: {time.time() - narrative_start:.2f}s")
             jobs[job_id]["progress"] = 95
+
+            # Step 4 — Generate PDF report with prompts
+            print(f"[{job_id}] Generating PDF report...")
+            pdf_start = time.time()
+            try:
+                safe_company = "".join(ch for ch in company if ch.isalnum() or ch in (" ", "_", "-")).strip().replace(" ", "_") or "report"
+                pdf_path = os.path.join(pdf_output_dir, f"{safe_company}_{job_id}.pdf")
+                create_pdf_report(
+                    company,
+                    "2024",
+                    bluf,
+                    narrative,
+                    sections,
+                    pdf_path
+                )
+                # Store PDF path for download
+                pdf_storage[job_id] = pdf_path
+                print(f"[{job_id}] PDF generation: {time.time() - pdf_start:.2f}s")
+            except Exception as e:
+                print(f"[{job_id}] ⚠ PDF generation failed (non-critical): {e}")
 
             # Success
             result = {
@@ -181,7 +275,8 @@ def _analyze_async(job_id, file_content, filename, company):
                 "fiscalYear": "2024",
                 "bluf": bluf,
                 "narrative": narrative,
-                "sections": sections
+                "sections": sections,
+                "pdf_available": job_id in pdf_storage
             }
 
             jobs[job_id]["result"] = result

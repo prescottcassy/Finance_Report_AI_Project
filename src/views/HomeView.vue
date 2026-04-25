@@ -15,8 +15,8 @@
 
       <div v-if="!file" class="upload-prompt">
         <div class="upload-icon">↑</div>
-        <p>Drag & drop your 10-K PDF</p>
-        <span>or click to browse</span>
+        <p>Drag & Drop A 10-K PDF</p>
+        <span>or click to upload</span>
       </div>
 
       <div v-else class="file-selected">
@@ -113,6 +113,7 @@ async function handleUpload() {
         jobComplete = true
         loadingProgress.value = 100
         localStorage.setItem('report', JSON.stringify(statusData.result))
+        localStorage.setItem('jobId', jobId)
         router.push('/report')
       } else if (statusData.status === 'error') {
         throw new Error(statusData.error || 'Analysis failed')
@@ -146,7 +147,7 @@ async function handleUpload() {
 .hero { text-align: center; }
 
 h1 {
-  font-size: 2.5rem;
+  font-size: 5.5rem;
   font-weight: 600;
   color: #ffffff;
   margin: 0 0 12px;
@@ -156,8 +157,8 @@ h1 {
 
 .subtitle {
   color: #9ca3af;
-  font-size: 1rem;
-  max-width: 400px;
+  font-size: 1.5rem;
+  max-width: 500px;
   margin: 0 auto;
 }
 

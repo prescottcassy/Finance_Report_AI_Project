@@ -36,14 +36,14 @@ defineProps({
 }
 
 h1 {
-  font-size: 1.75rem;
+  font-size: 2.2rem;
   font-weight: 600;
   margin: 0 0 8px;
 }
 
 .fiscal-year {
   color: #6b7280;
-  font-size: 0.9rem;
+  font-size: 1rem;
   margin: 0 0 24px;
 }
 
@@ -53,7 +53,7 @@ h1 {
 }
 
 h2 {
-  font-size: 1.1rem;
+  font-size: 1.4rem;
   font-weight: 500;
   color: #6366f1;
   margin: 0 0 12px;
@@ -61,7 +61,8 @@ h2 {
 
 p {
   color: #d1d5db;
-  line-height: 1.6;
+  line-height: 1.8;
   margin: 0;
+  font-size: 1.05rem;
 }
 </style>
