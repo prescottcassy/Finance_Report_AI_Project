@@ -1,6 +1,6 @@
-# Finance_Report_AI_Project
+# Finance Report AI Project
 
-Finance_Report_AI_Project is a full-stack 10-K analysis app that turns SEC filing PDFs into investor-ready reports with structured extraction, AI-generated summaries, a bottom line, and a narrative view of the business.
+Finance Report AI Project is a full-stack 10-K analysis app that turns SEC filing PDFs into investor-ready reports with structured extraction, AI-generated summaries, a bottom line, and a narrative view of the business.
 
 ## What it does
 
