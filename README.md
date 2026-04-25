@@ -16,7 +16,7 @@ Finance_Report_AI_Project is a full-stack 10-K analysis app that turns SEC filin
 - Backend: Flask
 - PDF extraction: pypdf, pdfplumber
 - Report generation: reportlab
-- AI generation: Anthropic API
+- AI generation: Anthropic API which includes Opus 4.7 for complex reasoning, Sonnet 4.6 for balance speed and intelligence &  Haiku 4.5 for fast, high-volume tasks
 
 ## Project Structure
 
