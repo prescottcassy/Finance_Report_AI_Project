@@ -85,13 +85,13 @@ def create_pdf_report(
     narrative,
     sections,
     output_path,
-    team_members=None,
     course_name=None,
     professor_name=None,
     generated_on=None,
     bluf_prompt=None,
     narrative_prompt=None,
     financial_metrics=None,
+    report_type="analysis",
 ):
     """
     Create a PDF report with the 10-K analysis and prompts used
@@ -102,10 +102,6 @@ def create_pdf_report(
     
     story = []
     styles = getSampleStyleSheet()
-    team_members = team_members or []
-    member_one = _display_value(team_members[0] if len(team_members) > 0 else "")
-    member_two = _display_value(team_members[1] if len(team_members) > 1 else "")
-    team_line = f"{member_one} and {member_two}"
     cover_date = _format_cover_date(generated_on)
     cover_course = _display_value(
         course_name or os.getenv("COURSE_NAME"),
@@ -211,7 +207,8 @@ def create_pdf_report(
     # Page 1: Dark cover with title, metrics, and class attribution
     story.append(Spacer(1, 0.8*inch))
     story.append(Paragraph(_escape_paragraph_text(str(company_name).upper()), cover_company_style))
-    story.append(Paragraph("Financial Storytelling Report", cover_report_style))
+    report_title = "Analysis Verification Report" if report_type == "verification" else "Financial Storytelling Report"
+    story.append(Paragraph(report_title, cover_report_style))
     story.append(Paragraph(f"Fiscal Year {fiscal_year}", cover_fiscal_style))
     story.append(Spacer(1, 0.12*inch))
 
@@ -256,7 +253,6 @@ def create_pdf_report(
 
     cover_course_single_line = " ".join(str(cover_course).splitlines()).strip()
     cover_meta_lines = [
-        f"Prepared by: {team_line}",
         f"Date: {cover_date}",
         f"Course: {cover_course_single_line}",
         f"Professor: {cover_professor}",
@@ -280,7 +276,7 @@ def create_pdf_report(
     if _has_text(bluf) or _has_text(narrative):
         story.append(Spacer(1, 0.04*inch))
     
-    # Pages 3+: Sections with prompts
+    # Pages 3+: Sections with prompts or verification summaries.
     for section in sections:
         # Skip Business Overview section
         title = (section.get('title') or '').strip()

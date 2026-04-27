@@ -31,11 +31,11 @@ def _missing_reader(*args, **kwargs):
     raise RuntimeError("10k_reader could not be loaded.")
 
 generate_summary = _missing_reader
-generate_bluf = _missing_reader
-generate_narrative = _missing_reader
 build_summary_prompt = _missing_reader
-build_bluf_prompt = _missing_reader
-build_narrative_prompt = _missing_reader
+extract_uploaded_document_text = _missing_reader
+build_rag_corpus = _missing_reader
+verify_analysis_document = _missing_reader
+summarize_verification_results = _missing_reader
 
 if spec2 and spec2.loader:
     reader_module = importlib.util.module_from_spec(spec2)
@@ -47,11 +47,11 @@ if spec2 and spec2.loader:
     except Exception as e:
         print(f"[STARTUP] ✗ Failed to load model: {e}")
     generate_summary = reader_module.generate_summary
-    generate_bluf = reader_module.generate_bluf
-    generate_narrative = reader_module.generate_narrative
     build_summary_prompt = getattr(reader_module, "build_summary_prompt", _missing_reader)
-    build_bluf_prompt = getattr(reader_module, "build_bluf_prompt", _missing_reader)
-    build_narrative_prompt = getattr(reader_module, "build_narrative_prompt", _missing_reader)
+    extract_uploaded_document_text = getattr(reader_module, "extract_uploaded_document_text", _missing_reader)
+    build_rag_corpus = getattr(reader_module, "build_rag_corpus", _missing_reader)
+    verify_analysis_document = getattr(reader_module, "verify_analysis_document", _missing_reader)
+    summarize_verification_results = getattr(reader_module, "summarize_verification_results", _missing_reader)
 
 app = Flask(__name__)
 CORS(app, origins=["http://localhost:5173"])
@@ -315,19 +315,24 @@ def _extract_cover_metrics(output_folder):
 @app.route("/analyze", methods=["POST"])
 def analyze():
     file = request.files.get("file")
+    analysis_files = request.files.getlist("analysis_files")
     company = request.form.get("company", "Company")
-    team_member_1 = request.form.get("team_member_1", "").strip()
-    team_member_2 = request.form.get("team_member_2", "").strip()
 
     if not file:
         return jsonify({"error": "No file provided"}), 400
 
-    if not team_member_1 or not team_member_2:
-        return jsonify({"error": "Two team member names are required"}), 400
-
     # Read file content immediately while request context is active
     file_content = file.read()
     filename = file.filename or "10k.pdf"
+
+    analysis_payload = []
+    for analysis_file in analysis_files:
+        if not analysis_file or not analysis_file.filename:
+            continue
+        analysis_payload.append({
+            "filename": analysis_file.filename,
+            "content": analysis_file.read(),
+        })
 
     # Create job ID
     job_id = f"{company}_{datetime.now().timestamp()}"
@@ -336,7 +341,7 @@ def analyze():
     # Run analysis in background thread
     thread = threading.Thread(
         target=_analyze_async,
-        args=(job_id, file_content, filename, company, team_member_1, team_member_2),
+        args=(job_id, file_content, filename, company, analysis_payload),
         daemon=True
     )
     thread.start()
@@ -372,10 +377,13 @@ def download_pdf(job_id):
     
     return send_file(pdf_path, as_attachment=True, download_name=f"{job_id}.pdf")
 
-def _analyze_async(job_id, file_content, filename, company, team_member_1, team_member_2):
+def _analyze_async(job_id, file_content, filename, company, analysis_files=None):
     """Run analysis in background and update job status"""
     start_time = time.time()
     try:
+        if not analysis_files:
+            raise ValueError("At least one analysis document must be uploaded for verification")
+
         jobs[job_id]["status"] = "extracting"
         jobs[job_id]["progress"] = 10
 
@@ -403,91 +411,76 @@ def _analyze_async(job_id, file_content, filename, company, team_member_1, team_
                 traceback.print_exc()
                 raise
             jobs[job_id]["progress"] = 30
-            cover_metrics = _extract_cover_metrics(output_folder)
+            print(f"[{job_id}] Building 10-K retrieval corpus...")
+            jobs[job_id]["status"] = "verifying"
 
-            # Step 2 — summarize each section sequentially (more stable on single GPU)
-            print(f"[{job_id}] Generating summaries...")
-            jobs[job_id]["status"] = "summarizing"
-            
             sections_map = {
                 "Business Overview": "businessOverview.txt",
-                "Risk Factors":      "riskFactors.txt",
-                "MD&A":              "managementDiscussion.txt",
-                "Financials":        "incomeStatements.txt",
+                "Risk Factors": "riskFactors.txt",
+                "MD&A": "managementDiscussion.txt",
+                "Financials": "incomeStatements.txt",
             }
 
-            sections = []
-            all_text = ""
-            section_prompts = {}
-
-            total_sections = len(sections_map)
-            completed_sections = 0
+            rag_documents = []
             for title, fname in sections_map.items():
                 path = os.path.join(output_folder, fname)
                 if not os.path.exists(path):
-                    sections.append({
-                        "title": title,
-                        "summary": "[Section file not found]",
-                        "prompt": "[Section file not found]",
-                    })
-                    completed_sections += 1
                     continue
 
                 with open(path, "r", encoding="utf-8") as f:
                     text = f.read()
 
-                # Financials: append numeric table excerpts so model sees actual 10-K numbers.
                 if title == "Financials":
                     csv_context = _build_financial_csv_context(output_folder)
                     if csv_context:
                         text = text + "\n\n" + csv_context
 
-                text_size = len(text.strip())
-                print(f"[{job_id}] {title}: {text_size} characters")
+                rag_documents.append({"source": title, "text": text})
+
+            rag_corpus = build_rag_corpus(rag_documents)
+            jobs[job_id]["progress"] = 45
+
+            verification_results = []
+            verification_sections = []
+            analysis_dir = os.path.join(tmpdir, "analysis")
+            os.makedirs(analysis_dir, exist_ok=True)
+
+            print(f"[{job_id}] Verifying uploaded analysis documents with RAG...")
+            for index, analysis_file in enumerate(analysis_files, start=1):
+                analysis_name = os.path.basename(analysis_file.get("filename") or f"analysis_{index}")
+                analysis_path = os.path.join(analysis_dir, analysis_name)
+                with open(analysis_path, "wb") as analysis_handle:
+                    analysis_handle.write(analysis_file.get("content", b""))
 
                 try:
-                    section_prompt, _ = build_summary_prompt(text, title)
-                    section_prompts[title] = section_prompt
-                    summary = generate_summary(text, title)
-                    sections.append({
-                        "title": title,
-                        "summary": summary,
-                        "prompt": section_prompt,
-                    })
-                    all_text += f"\n\n{title}:\n{summary}"
-                    print(f"[{job_id}] ✓ {title} summary complete")
+                    analysis_text = extract_uploaded_document_text(analysis_path)
                 except Exception as e:
-                    print(f"[{job_id}] ✗ {title} summary failed: {e}")
-                    fallback_prompt = section_prompts.get(title, f"[Could not build prompt: {str(e)}]")
-                    sections.append({
-                        "title": title,
-                        "summary": f"Error: {str(e)}",
-                        "prompt": fallback_prompt,
+                    verification_results.append({
+                        "file_name": analysis_name,
+                        "overall_status": "needs_review",
+                        "findings": [{
+                            "claim": "Document extraction failed.",
+                            "verdict": "Unclear",
+                            "reason": str(e),
+                            "evidence": "",
+                            "sources": [],
+                        }],
                     })
+                    continue
 
-                completed_sections += 1
-                jobs[job_id]["progress"] = min(65, 30 + int((completed_sections / total_sections) * 35))
+                result = verify_analysis_document(analysis_name, analysis_text, rag_corpus, company)
+                verification_results.append(result)
+                verification_sections.append({
+                    "title": analysis_name,
+                    "summary": summarize_verification_results([result]),
+                    "prompt": "Comparison of uploaded analysis against 10-K evidence",
+                })
 
-            jobs[job_id]["progress"] = 65
+                jobs[job_id]["progress"] = min(85, 45 + int((index / len(analysis_files)) * 35))
 
-            # Step 3 — generate BLUF + narrative
-            print(f"[{job_id}] Generating BLUF and narrative...")
-            jobs[job_id]["status"] = "generating"
-            jobs[job_id]["progress"] = 75
-            
-            bluf_start = time.time()
-            bluf_prompt, _ = build_bluf_prompt(all_text, company)
-            bluf = generate_bluf(all_text, company)
-            print(f"[{job_id}] BLUF generation: {time.time() - bluf_start:.2f}s")
-            jobs[job_id]["progress"] = 85
-            
-            narrative_start = time.time()
-            narrative_prompt, _ = build_narrative_prompt(all_text, company)
-            narrative = generate_narrative(all_text, company)
-            print(f"[{job_id}] Narrative generation: {time.time() - narrative_start:.2f}s")
-            jobs[job_id]["progress"] = 95
+            jobs[job_id]["progress"] = 90
 
-            # Step 4 — Generate PDF report with prompts
+            # Step 3 — generate PDF verification report
             print(f"[{job_id}] Generating PDF report...")
             pdf_start = time.time()
             try:
@@ -496,14 +489,12 @@ def _analyze_async(job_id, file_content, filename, company, team_member_1, team_
                 create_pdf_report(
                     company,
                     "2024",
-                    bluf,
-                    narrative,
-                    sections,
+                    "",
+                    "",
+                    verification_sections,
                     pdf_path,
-                    team_members=[team_member_1, team_member_2],
-                    bluf_prompt=bluf_prompt,
-                    narrative_prompt=narrative_prompt,
-                    financial_metrics=cover_metrics,
+                    financial_metrics=None,
+                    report_type="verification",
                 )
                 # Store PDF path for download
                 pdf_storage[job_id] = pdf_path
@@ -515,9 +506,10 @@ def _analyze_async(job_id, file_content, filename, company, team_member_1, team_
             result = {
                 "companyName": company,
                 "fiscalYear": "2024",
-                "bluf": bluf,
-                "narrative": narrative,
-                "sections": sections,
+                "verification_summary": summarize_verification_results(verification_results),
+                "sections": verification_sections,
+                "analysis_verification": verification_results,
+                "mode": "verification",
                 "pdf_available": job_id in pdf_storage
             }
 

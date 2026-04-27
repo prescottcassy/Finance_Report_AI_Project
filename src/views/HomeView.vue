@@ -1,38 +1,66 @@
 <template>
   <div class="home">
     <div class="hero">
-      <h1>10-K <span class="accent">Investor Report</span></h1>
-      <p class="subtitle">Upload a 10-K filing and get an AI-generated investor-ready report in minutes</p>
+      <h1>10-K <span class="accent">Verifier</span></h1>
+      <p class="subtitle">Upload a 10-K filing and the analysis you want checked against it</p>
     </div>
 
-    <div class="upload-card" :class="{ dragover: isDragging }"
-      @dragover.prevent="isDragging = true"
-      @dragleave="isDragging = false"
-      @drop.prevent="onDrop"
-      @click="fileInput.click()"
-    >
-      <input type="file" accept=".pdf" ref="fileInput" @change="onFileChange" hidden />
+    <div class="upload-stack">
+      <div class="upload-panel">
+        <p class="panel-label">1. 10-K filing</p>
+        <div class="upload-card" :class="{ dragover: isDraggingTenK }"
+          @dragover.prevent="isDraggingTenK = true"
+          @dragleave="isDraggingTenK = false"
+          @drop.prevent="onTenKDrop"
+          @click="tenKInput.click()"
+        >
+          <input type="file" accept=".pdf" ref="tenKInput" @change="onTenKChange" hidden />
 
-      <div v-if="!file" class="upload-prompt">
-        <div class="upload-icon">↑</div>
-        <p>Drag & Drop A 10-K PDF</p>
-        <span>or click to upload</span>
+          <div v-if="!tenKFile" class="upload-prompt">
+            <div class="upload-icon">↑</div>
+            <p>Drag & Drop A 10-K PDF</p>
+            <span>or click to upload</span>
+          </div>
+
+          <div v-else class="file-selected">
+            <div class="upload-icon">✓</div>
+            <p>{{ tenKFile.name }}</p>
+            <span>Ready for source extraction</span>
+          </div>
+        </div>
       </div>
 
-      <div v-else class="file-selected">
-        <div class="upload-icon">✓</div>
-        <p>{{ file.name }}</p>
-        <span>Ready to analyze</span>
-      </div>
+      <div class="upload-panel">
+        <p class="panel-label">2. Analysis documents</p>
+        <div class="upload-card" :class="{ dragover: isDraggingAnalysis }"
+          @dragover.prevent="isDraggingAnalysis = true"
+          @dragleave="isDraggingAnalysis = false"
+          @drop.prevent="onAnalysisDrop"
+          @click="analysisInput.click()"
+        >
+          <input type="file" accept=".pdf,.txt,.md" ref="analysisInput" @change="onAnalysisChange" multiple hidden />
 
+          <div v-if="!analysisFiles.length" class="upload-prompt">
+            <div class="upload-icon">⇪</div>
+            <p>Drag & Drop Analysis PDFs or text files</p>
+            <span>upload one or more documents to verify</span>
+          </div>
+
+          <div v-else class="file-selected">
+            <div class="upload-icon">✓</div>
+            <p>{{ analysisFiles.length }} document{{ analysisFiles.length === 1 ? '' : 's' }} selected</p>
+            <span>{{ analysisFiles.map(file => file.name).join(', ') }}</span>
+          </div>
+        </div>
+      </div>
     </div>
 
-    <div v-if="file" class="company-input">
+    <div v-if="tenKFile" class="company-input">
       <input v-model="companyName" type="text" placeholder="Company name (e.g. Qualcomm)" />
     </div>
 
     <LoadingSpinner v-if="isLoading" :message="loadingMessage" :progress="loadingProgress" />
-    <button v-else-if="file" class="analyze-btn" @click="handleUpload">Generate Report</button>
+    <button v-else-if="tenKFile" class="analyze-btn" :disabled="!analysisFiles.length" @click="handleUpload">Run Verification</button>
   </div>
 </template>
 
@@ -42,31 +70,56 @@ import { useRouter } from 'vue-router'
 import LoadingSpinner from '../components/LoadingSpinner.vue'
 
 const router = useRouter()
-const fileInput = ref(null)
-const file = ref(null)
+const tenKInput = ref(null)
+const analysisInput = ref(null)
+const tenKFile = ref(null)
+const analysisFiles = ref([])
 const companyName = ref('')
-const isDragging = ref(false)
+const isDraggingTenK = ref(false)
+const isDraggingAnalysis = ref(false)
 const isLoading = ref(false)
 const loadingProgress = ref(0)
 const loadingMessage = ref('This may take a minute...')
 
-function onFileChange(e) {
-  file.value = e.target.files[0]
+function onTenKChange(e) {
+  tenKFile.value = e.target.files[0]
 }
 
-function onDrop(e) {
-  isDragging.value = false
-  file.value = e.dataTransfer.files[0]
+function onTenKDrop(e) {
+  isDraggingTenK.value = false
+  tenKFile.value = e.dataTransfer.files[0]
+}
+
+function onAnalysisChange(e) {
+  analysisFiles.value = Array.from(e.target.files || [])
+}
+
+function onAnalysisDrop(e) {
+  isDraggingAnalysis.value = false
+  analysisFiles.value = Array.from(e.dataTransfer.files || [])
 }
 
 async function handleUpload() {
+  if (!tenKFile.value) {
+    alert('Please upload a 10-K PDF first.')
+    return
+  }
+
+  if (!analysisFiles.value.length) {
+    alert('Please upload at least one analysis document to verify.')
+    return
+  }
+
   isLoading.value = true
   loadingProgress.value = 0
-  loadingMessage.value = 'Starting analysis...'
+  loadingMessage.value = 'Starting verification...'
   
   const formData = new FormData()
-  formData.append('file', file.value)
+  formData.append('file', tenKFile.value)
   formData.append('company', companyName.value || 'Company')
+  for (const file of analysisFiles.value) {
+    formData.append('analysis_files', file)
+  }
 
   try {
     // Step 1: Submit the file and get job ID
@@ -81,9 +134,9 @@ async function handleUpload() {
     }
 
     const jobId = submitData.job_id
-    console.log(`Analysis started with job ID: ${jobId}`)
+    console.log(`Verification started with job ID: ${jobId}`)
     loadingProgress.value = 5
-    loadingMessage.value = 'Extracting 10-K sections...'
+    loadingMessage.value = 'Extracting 10-K source text...'
 
     // Step 2: Poll for job completion
     let jobComplete = false
@@ -101,9 +154,9 @@ async function handleUpload() {
       if (statusData.status === 'extracting') {
         loadingMessage.value = 'Extracting 10-K sections from PDF...'
       } else if (statusData.status === 'summarizing') {
-        loadingMessage.value = 'Generating AI summaries (this takes time)...'
-      } else if (statusData.status === 'generating') {
-        loadingMessage.value = 'Creating investor narrative...'
+        loadingMessage.value = 'Building the 10-K evidence corpus...'
+      } else if (statusData.status === 'verifying') {
+        loadingMessage.value = 'Checking uploaded analysis against the 10-K...'
       }
       
       loadingProgress.value = Math.max(loadingProgress.value, statusData.progress)
@@ -162,9 +215,30 @@ h1 {
   margin: 0 auto;
 }
 
+.upload-stack {
+  width: 100%;
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.upload-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.panel-label {
+  margin: 0;
+  color: #cbd5e1;
+  font-size: 0.9rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .upload-card {
   width: 100%;
-  max-width: 480px;
   border: 2px dashed #2d2d2d;
   border-radius: 16px;
   padding: 48px 24px;
@@ -193,7 +267,7 @@ h1 {
 
 .company-input input {
   width: 100%;
-  max-width: 480px;
+  max-width: 560px;
   padding: 12px 16px;
   background: #1a1a1a;
   border: 1px solid #2d2d2d;
@@ -216,6 +290,11 @@ h1 {
   font-weight: 500;
   cursor: pointer;
   transition: background 0.2s;
+}
+
+.analyze-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .analyze-btn:hover { background: #4f46e5; }
