@@ -3,16 +3,9 @@
     <h1>{{ report.companyName }}</h1>
     <p class="fiscal-year">Fiscal Year {{ report.fiscalYear }}</p>
 
-    <!-- BLUF -->
-    <div class="bluf">
-      <h2>Bottom Line</h2>
-      <p>{{ report.bluf }}</p>
-    </div>
-
-    <!-- Narrative -->
-    <div class="narrative">
-      <h2>The Story</h2>
-      <p>{{ report.narrative }}</p>
+    <div v-if="report.verification_summary" class="bluf">
+      <h2>Verification Summary</h2>
+      <p class="summary-text">{{ report.verification_summary }}</p>
     </div>
   </div>
 </template>
@@ -28,11 +21,11 @@ defineProps({
 
 <style scoped>
 .report-hero {
-  background: #1a1a1a;
-  border-radius: 12px;
-  padding: 32px 24px;
-  margin-bottom: 24px;
+  background: rgba(26, 26, 26, 0.96);
+  border-radius: 18px;
+  padding: 28px 24px;
   border: 1px solid #2d2d2d;
+  box-shadow: 0 16px 30px rgba(0, 0, 0, 0.2);
 }
 
 h1 {
@@ -49,7 +42,7 @@ h1 {
 
 .bluf,
 .narrative {
-  margin: 24px 0;
+  margin: 18px 0 0;
 }
 
 h2 {
@@ -59,10 +52,11 @@ h2 {
   margin: 0 0 12px;
 }
 
-p {
+.summary-text {
   color: #d1d5db;
   line-height: 1.8;
   margin: 0;
-  font-size: 1.05rem;
+  font-size: 1rem;
+  white-space: pre-wrap;
 }
 </style>

@@ -6,7 +6,7 @@
     </div>
 
     <div v-if="isOpen" class="section-body">
-      <p>{{ section.summary }}</p>
+      <p class="section-summary">{{ section.summary }}</p>
     </div>
   </div>
 </template>
@@ -30,17 +30,18 @@ function toggle() {
 
 <style scoped>
 .report-section {
-  background: #1a1a1a;
+  background: rgba(26, 26, 26, 0.96);
   border: 1px solid #2d2d2d;
-  border-radius: 10px;
+  border-radius: 16px;
   overflow: hidden;
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.16);
 }
 
 .section-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 16px 20px;
+  padding: 18px 20px;
   cursor: pointer;
   transition: background 0.2s;
 }
@@ -62,15 +63,16 @@ span {
 }
 
 .section-body {
-  padding: 16px 20px;
+  padding: 18px 20px 20px;
   border-top: 1px solid #2d2d2d;
-  background: #0f0f0f;
+  background: #111827;
 }
 
-p {
+.section-summary {
   margin: 0;
   color: #d1d5db;
   line-height: 1.8;
-  font-size: 1.05rem;
+  font-size: 0.98rem;
+  white-space: pre-wrap;
 }
 </style>

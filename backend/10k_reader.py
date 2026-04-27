@@ -16,11 +16,13 @@ import os
 import textwrap
 import re
 import importlib.util
+from collections import Counter
 from datetime import datetime
 from typing import Optional
 
 from anthropic import Anthropic
 from dotenv import load_dotenv
+from pypdf import PdfReader
 
 import importlib.util
 
@@ -212,6 +214,274 @@ Continuation:"""
         return _clean_output_text(merged)
     except Exception:
         return cleaned
+
+
+def _read_text_file(file_path: str) -> str:
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as file_handle:
+        return file_handle.read()
+
+
+def extract_uploaded_document_text(file_path: str) -> str:
+    """Extract text from a supported uploaded document."""
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(file_path)
+
+    extension = os.path.splitext(file_path)[1].lower()
+    if extension == ".pdf":
+        text_parts = []
+        reader = PdfReader(file_path)
+        for page in reader.pages:
+            try:
+                page_text = page.extract_text() or ""
+            except Exception:
+                page_text = ""
+            if page_text.strip():
+                text_parts.append(page_text)
+        return "\n".join(text_parts).strip()
+
+    if extension in {".txt", ".md", ".text"}:
+        return _read_text_file(file_path).strip()
+
+    raise ValueError(f"Unsupported analysis document type: {extension or 'unknown'}")
+
+
+def _normalize_for_rag(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "")).strip().lower()
+
+
+def _tokenize_for_rag(text: str) -> list[str]:
+    tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9%$,.\-/]*", _normalize_for_rag(text))
+    return [token.strip("$,.\/-%)") for token in tokens if token.strip("$,.\/-%)")]
+
+
+def chunk_text(text: str, chunk_size: int = 1200, overlap: int = 220) -> list[str]:
+    """Split text into overlapping chunks for retrieval."""
+    normalized = (text or "").strip()
+    if not normalized:
+        return []
+
+    paragraphs = [paragraph.strip() for paragraph in re.split(r"\n\s*\n", normalized) if paragraph.strip()]
+    chunks: list[str] = []
+    current = ""
+
+    for paragraph in paragraphs:
+        if not current:
+            current = paragraph
+            continue
+
+        if len(current) + len(paragraph) + 2 <= chunk_size:
+            current = f"{current}\n\n{paragraph}"
+            continue
+
+        chunks.append(current.strip())
+        if len(paragraph) <= chunk_size:
+            current = paragraph
+            continue
+
+        start = 0
+        step = max(1, chunk_size - overlap)
+        while start < len(paragraph):
+            piece = paragraph[start:start + chunk_size].strip()
+            if piece:
+                chunks.append(piece)
+            start += step
+        current = ""
+
+    if current.strip():
+        chunks.append(current.strip())
+
+    return chunks
+
+
+def build_rag_corpus(documents: list[dict], chunk_size: int = 1200, overlap: int = 220) -> list[dict]:
+    """Build a retrievable chunk corpus from named source documents."""
+    corpus: list[dict] = []
+    for document in documents:
+        source_name = document.get("source", "source")
+        text = (document.get("text") or "").strip()
+        if not text:
+            continue
+
+        for index, chunk in enumerate(chunk_text(text, chunk_size=chunk_size, overlap=overlap), start=1):
+            cleaned = chunk.strip()
+            if not cleaned:
+                continue
+            corpus.append({
+                "source": f"{source_name}::chunk_{index}",
+                "text": cleaned,
+            })
+
+    return corpus
+
+
+def _score_relevance(query_tokens: list[str], chunk_tokens: list[str]) -> float:
+    if not query_tokens or not chunk_tokens:
+        return 0.0
+
+    query_counter = Counter(query_tokens)
+    chunk_counter = Counter(chunk_tokens)
+    overlap_score = sum(min(count, chunk_counter.get(token, 0)) for token, count in query_counter.items())
+
+    numeric_bonus = 0.0
+    for token in query_counter:
+        if any(character.isdigit() for character in token) and token in chunk_counter:
+            numeric_bonus += 2.0
+
+    return float(overlap_score + numeric_bonus)
+
+
+def retrieve_relevant_chunks(query: str, corpus: list[dict], top_k: int = 4) -> list[dict]:
+    """Return the most relevant chunks for a query using lexical overlap."""
+    query_tokens = _tokenize_for_rag(query)
+    ranked = []
+
+    for chunk in corpus:
+        chunk_text_value = chunk.get("text", "")
+        score = _score_relevance(query_tokens, _tokenize_for_rag(chunk_text_value))
+        if score <= 0:
+            continue
+        ranked.append({**chunk, "score": score})
+
+    ranked.sort(key=lambda item: item["score"], reverse=True)
+    return ranked[:top_k]
+
+
+def _should_verify_claim(sentence: str) -> bool:
+    lowered = sentence.lower()
+    signal_words = [
+        "revenue", "sales", "income", "profit", "loss", "margin", "cash flow", "debt",
+        "guidance", "growth", "customer", "employee", "risk", "market", "assets", "liabilities",
+        "operating", "quarter", "year", "fiscal", "million", "billion", "%",
+    ]
+    if any(word in lowered for word in signal_words):
+        return True
+    if re.search(r"\d", sentence):
+        return True
+    return len(sentence) >= 90
+
+
+def _split_analysis_claims(text: str, max_claims: int = 12) -> list[str]:
+    paragraphs = [paragraph.strip() for paragraph in re.split(r"\n\s*\n", text or "") if paragraph.strip()]
+    claims: list[str] = []
+
+    for paragraph in paragraphs:
+        sentences = re.split(r"(?<=[.!?])\s+", paragraph)
+        for sentence in sentences:
+            candidate = sentence.strip().strip("-•\t")
+            if len(candidate) < 35:
+                continue
+            if _should_verify_claim(candidate) or len(candidate) >= 120:
+                claims.append(candidate)
+            if len(claims) >= max_claims:
+                return claims
+
+    if not claims and text.strip():
+        claims.append(text.strip()[:500])
+
+    return claims[:max_claims]
+
+
+def _parse_verification_response(response_text: str) -> dict:
+    verdict = "Unclear"
+    reason = response_text.strip()
+    evidence = ""
+
+    verdict_match = re.search(r"VERDICT:\s*(Supported|Partially Supported|Unsupported|Unclear)", response_text, flags=re.IGNORECASE)
+    if verdict_match:
+        verdict = verdict_match.group(1).title()
+
+    reason_match = re.search(r"REASON:\s*(.*?)(?:\nEVIDENCE:|$)", response_text, flags=re.IGNORECASE | re.DOTALL)
+    if reason_match:
+        reason = reason_match.group(1).strip()
+
+    evidence_match = re.search(r"EVIDENCE:\s*(.*)$", response_text, flags=re.IGNORECASE | re.DOTALL)
+    if evidence_match:
+        evidence = evidence_match.group(1).strip()
+
+    return {
+        "verdict": verdict,
+        "reason": reason,
+        "evidence": evidence,
+    }
+
+
+def verify_analysis_document(document_name: str, document_text: str, corpus: list[dict], company_name: str = "the company") -> dict:
+    """Verify the factual claims in an uploaded analysis document against the 10-K corpus."""
+    claims = _split_analysis_claims(document_text)
+    findings: list[dict] = []
+
+    for claim in claims:
+        retrieved = retrieve_relevant_chunks(claim, corpus, top_k=4)
+        context_block = "\n\n".join(
+            f"[{chunk['source']}]\n{chunk['text']}" for chunk in retrieved
+        )
+        if not context_block.strip():
+            findings.append({
+                "claim": claim,
+                "verdict": "Unclear",
+                "reason": "No relevant 10-K evidence was retrieved for this claim.",
+                "evidence": "",
+                "sources": [],
+            })
+            continue
+
+        prompt = f"""You are checking whether a user's analysis statement is supported by the 10-K source excerpts.
+Use only the excerpts below. If the claim is partially right, say what is right and what is not.
+
+Return plain text in exactly this format:
+VERDICT: Supported | Partially Supported | Unsupported | Unclear
+REASON: brief explanation
+EVIDENCE: one or two short quotes or paraphrases from the excerpts
+
+Company: {company_name}
+
+Source excerpts:
+{context_block}
+
+Analysis statement:
+{claim}"""
+
+        verification_text = _run_inference(prompt, max_new_tokens=260)
+        parsed = _parse_verification_response(verification_text)
+        findings.append({
+            "claim": claim,
+            "verdict": parsed["verdict"],
+            "reason": parsed["reason"],
+            "evidence": parsed["evidence"],
+            "sources": [chunk["source"] for chunk in retrieved],
+        })
+
+    verdicts = {finding["verdict"] for finding in findings}
+    if "Unsupported" in verdicts:
+        overall_status = "needs_review"
+    elif "Partially Supported" in verdicts or "Unclear" in verdicts:
+        overall_status = "review"
+    else:
+        overall_status = "verified"
+
+    return {
+        "file_name": document_name,
+        "overall_status": overall_status,
+        "findings": findings,
+    }
+
+
+def summarize_verification_results(results: list[dict]) -> str:
+    """Create a compact plain-text summary of verification results for the report."""
+    if not results:
+        return "No analysis documents were uploaded for verification."
+
+    lines = []
+    for result in results:
+        lines.append(f"{result.get('file_name', 'analysis document')}: {result.get('overall_status', 'review')}")
+        for finding in result.get("findings", [])[:5]:
+            lines.append(
+                f"- {finding.get('verdict', 'Unclear')}: {finding.get('claim', '')}"
+            )
+            reason = finding.get("reason", "")
+            if reason:
+                lines.append(f"  {reason}")
+    return "\n".join(lines).strip()
 
 
 # ── AI generation functions ───────────────────────────────────────────────────
