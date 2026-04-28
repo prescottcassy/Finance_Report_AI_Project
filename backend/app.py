@@ -474,6 +474,8 @@ def _analyze_async(job_id, file_content, filename, company, analysis_files=None)
                     "title": analysis_name,
                     "summary": summarize_verification_results([result]),
                     "prompt": "Comparison of uploaded analysis against 10-K evidence",
+                    "findings": result.get("findings", []),
+                    "overall_status": result.get("overall_status"),
                 })
 
                 jobs[job_id]["progress"] = min(85, 45 + int((index / len(analysis_files)) * 35))

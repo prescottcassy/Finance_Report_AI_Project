@@ -221,6 +221,40 @@ def _read_text_file(file_path: str) -> str:
         return file_handle.read()
 
 
+def _remove_document_metadata(text: str) -> str:
+    """Remove common header/footer metadata lines from uploaded analysis documents.
+
+    This filters lines like "Prepared by:", "Date:", "Course:", and "Professor:" so
+    they are not treated as factual claims during verification.
+    """
+    if not text:
+        return text
+
+    lines = text.splitlines()
+    cleaned_lines = []
+    metadata_patterns = [
+        r"^\s*Prepared by[:\s]",
+        r"^\s*Prepared for[:\s]",
+        r"^\s*Date[:\s]",
+        r"^\s*Course[:\s]",
+        r"^\s*Professor[:\s]",
+    ]
+
+    for line in lines:
+        # Skip obvious metadata lines
+        if any(re.search(p, line, flags=re.IGNORECASE) for p in metadata_patterns):
+            continue
+
+        # Skip very short lines that look like course/semester markers or author lines
+        stripped = line.strip()
+        if len(stripped) <= 80 and re.search(r"\b(ITAI|Course|Professor|Spring|Prepared)\b", stripped, flags=re.IGNORECASE):
+            continue
+
+        cleaned_lines.append(line)
+
+    return "\n".join(cleaned_lines)
+
+
 def extract_uploaded_document_text(file_path: str) -> str:
     """Extract text from a supported uploaded document."""
     if not os.path.exists(file_path):
@@ -251,7 +285,7 @@ def _normalize_for_rag(text: str) -> str:
 
 def _tokenize_for_rag(text: str) -> list[str]:
     tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9%$,.\-/]*", _normalize_for_rag(text))
-    return [token.strip("$,.\/-%)") for token in tokens if token.strip("$,.\/-%)")]
+    return [token.strip("$,./-%)") for token in tokens if token.strip("$,./-%)")]
 
 
 def chunk_text(text: str, chunk_size: int = 1200, overlap: int = 220) -> list[str]:
@@ -320,14 +354,24 @@ def _score_relevance(query_tokens: list[str], chunk_tokens: list[str]) -> float:
 
     query_counter = Counter(query_tokens)
     chunk_counter = Counter(chunk_tokens)
+
+    # Base lexical overlap score
     overlap_score = sum(min(count, chunk_counter.get(token, 0)) for token, count in query_counter.items())
 
-    numeric_bonus = 0.0
-    for token in query_counter:
-        if any(character.isdigit() for character in token) and token in chunk_counter:
-            numeric_bonus += 2.0
+    # Stronger numeric matching: reward chunks that contain the same numeric tokens
+    numeric_match_bonus = 0.0
+    for token, count in query_counter.items():
+        if any(ch.isdigit() for ch in token):
+            # Exact numeric token match in chunk gets a higher weight per occurrence
+            if token in chunk_counter:
+                numeric_match_bonus += 4.0 * min(count, chunk_counter.get(token, 0))
 
-    return float(overlap_score + numeric_bonus)
+    # Also give a small bonus when the chunk contains any numeric tokens and the query had numerics
+    query_has_numeric = any(any(ch.isdigit() for ch in t) for t in query_tokens)
+    chunk_has_numeric = any(any(ch.isdigit() for ch in t) for t in chunk_tokens)
+    contextual_numeric_bonus = 2.0 if query_has_numeric and chunk_has_numeric else 0.0
+
+    return float(overlap_score + numeric_match_bonus + contextual_numeric_bonus)
 
 
 def retrieve_relevant_chunks(query: str, corpus: list[dict], top_k: int = 4) -> list[dict]:
@@ -347,20 +391,31 @@ def retrieve_relevant_chunks(query: str, corpus: list[dict], top_k: int = 4) -> 
 
 
 def _should_verify_claim(sentence: str) -> bool:
-    lowered = sentence.lower()
-    signal_words = [
-        "revenue", "sales", "income", "profit", "loss", "margin", "cash flow", "debt",
-        "guidance", "growth", "customer", "employee", "risk", "market", "assets", "liabilities",
-        "operating", "quarter", "year", "fiscal", "million", "billion", "%",
-    ]
-    if any(word in lowered for word in signal_words):
-        return True
+    """Return True only for claims that contain numeric tokens or explicit numeric scales.
+
+    This prevents purely qualitative or opinionated sentences from being verified.
+    """
+    if not sentence or not sentence.strip():
+        return False
+
+    # Numeric signal: any digit, currency symbol, or percent
     if re.search(r"\d", sentence):
         return True
-    return len(sentence) >= 90
+    if re.search(r"\$|%", sentence):
+        return True
+
+    # Scale words commonly used to express quantities
+    if re.search(r"\b(million|billion|thousand|k)\b", sentence, flags=re.IGNORECASE):
+        return True
+
+    # Otherwise treat as non-numeric (do not verify)
+    return False
 
 
 def _split_analysis_claims(text: str, max_claims: int = 12) -> list[str]:
+    # Remove common document metadata that should not be verified as claims
+    text = _remove_document_metadata(text)
+
     paragraphs = [paragraph.strip() for paragraph in re.split(r"\n\s*\n", text or "") if paragraph.strip()]
     claims: list[str] = []
 
@@ -370,12 +425,14 @@ def _split_analysis_claims(text: str, max_claims: int = 12) -> list[str]:
             candidate = sentence.strip().strip("-•\t")
             if len(candidate) < 35:
                 continue
-            if _should_verify_claim(candidate) or len(candidate) >= 120:
+            # Only verify sentences that are numeric in nature
+            if _should_verify_claim(candidate):
                 claims.append(candidate)
             if len(claims) >= max_claims:
                 return claims
 
-    if not claims and text.strip():
+    # Only include a fallback when the document itself contains numeric text.
+    if not claims and text.strip() and re.search(r"\d|\$|%|\b(million|billion|thousand|k)\b", text, flags=re.IGNORECASE):
         claims.append(text.strip()[:500])
 
     return claims[:max_claims]
@@ -426,20 +483,26 @@ def verify_analysis_document(document_name: str, document_text: str, corpus: lis
             continue
 
         prompt = f"""You are checking whether a user's analysis statement is supported by the 10-K source excerpts.
-Use only the excerpts below. If the claim is partially right, say what is right and what is not.
+    Use only the excerpts below. Do NOT provide opinions, recommendations, or qualitative commentary — focus exclusively on numeric correctness.
 
-Return plain text in exactly this format:
-VERDICT: Supported | Partially Supported | Unsupported | Unclear
-REASON: brief explanation
-EVIDENCE: one or two short quotes or paraphrases from the excerpts
+    Numeric-only guidance:
+    - If the analysis statement contains numeric figures (amounts, percentages, counts, years), compare those exact numbers and units against the excerpts and report whether they match.
+    - When numbers differ, list the claim's numeric value and the best-matching value from the excerpts and explain the discrepancy only in terms of numeric differences (units, fiscal year, rounding, or context).
+    - If the analysis statement contains no numeric figures, respond with "Unclear" when numeric comparison is not applicable.
 
-Company: {company_name}
+    Return plain text in exactly this format (no extra text):
+    VERDICT: Supported | Partially Supported | Unsupported | Unclear
+    REASON: concise numeric comparisons only (e.g., "Claim: $1.2B — Source: $1.1B (FY2023); difference likely rounding")
+    EVIDENCE: one or two short quotes or paraphrases from the excerpts showing the numeric values
 
-Source excerpts:
-{context_block}
+    Company: {company_name}
 
-Analysis statement:
-{claim}"""
+    Source excerpts:
+    {context_block}
+
+    Analysis statement:
+    {claim}"""
+        
 
         verification_text = _run_inference(prompt, max_new_tokens=260)
         parsed = _parse_verification_response(verification_text)
@@ -467,20 +530,75 @@ Analysis statement:
 
 
 def summarize_verification_results(results: list[dict]) -> str:
-    """Create a compact plain-text summary of verification results for the report."""
+    """Create a compact plain-text summary of verification results for the report.
+
+    New format (per-file):
+      <filename>: <OverallStatus> — Supported: X, Partially: Y, Unsupported: Z, Unclear: W
+        Top unsupported claims:
+          - <short claim 1>
+          - <short claim 2>
+
+    This gives a quick overview and examples for any problematic (unsupported) claims.
+    """
     if not results:
         return "No analysis documents were uploaded for verification."
 
     lines = []
+    number_re = re.compile(r"\$?\d[\d,\.]*\s*(?:%|billion|million|k|thousand)?", flags=re.IGNORECASE)
+
     for result in results:
-        lines.append(f"{result.get('file_name', 'analysis document')}: {result.get('overall_status', 'review')}")
-        for finding in result.get("findings", [])[:5]:
-            lines.append(
-                f"- {finding.get('verdict', 'Unclear')}: {finding.get('claim', '')}"
-            )
-            reason = finding.get("reason", "")
-            if reason:
-                lines.append(f"  {reason}")
+        fname = result.get('file_name', 'analysis document')
+        overall = result.get('overall_status', 'review')
+
+        verdict_counts = Counter()
+        for f in result.get('findings', []):
+            verdict_counts[f.get('verdict', 'Unclear')] += 1
+
+        sup = verdict_counts.get('Supported', 0)
+        part = verdict_counts.get('Partially Supported', 0)
+        uns = verdict_counts.get('Unsupported', 0)
+        unc = verdict_counts.get('Unclear', 0)
+
+        lines.append(f"{fname}: {str(overall).replace('_', ' ').capitalize()} — Supported: {sup}, Partially: {part}, Unsupported: {uns}, Unclear: {unc}")
+
+        # For unsupported examples, prefer examples that contain numeric tokens
+        if uns > 0:
+            numeric_examples = []
+            non_numeric_examples = []
+            for f in result.get('findings', []):
+                if f.get('verdict') != 'Unsupported':
+                    continue
+                claim = (f.get('claim') or '').replace('\n', ' ').strip()
+                evidence = (f.get('evidence') or '').replace('\n', ' ').strip()
+
+                if number_re.search(claim) or number_re.search(evidence):
+                    # include claim and a short numeric snippet from evidence if available
+                    num_match = number_re.search(evidence) or number_re.search(claim)
+                    num_snip = num_match.group(0) if num_match else ''
+                    numeric_examples.append((claim[:180], num_snip))
+                else:
+                    non_numeric_examples.append(claim[:180])
+
+            lines.append("  Top unsupported numeric examples:")
+            shown = 0
+            for claim_snip, num_snip in numeric_examples:
+                if shown >= 3:
+                    break
+                if num_snip:
+                    lines.append(f"  - {claim_snip}  ({num_snip})")
+                else:
+                    lines.append(f"  - {claim_snip}")
+                shown += 1
+
+            # If no numeric examples, show up to 3 unsupported claims (shortened)
+            if shown == 0:
+                lines.append("  (no numeric examples found — listing unsupported claims)")
+                for claim_snip in non_numeric_examples[:3]:
+                    lines.append(f"  - {claim_snip}")
+
+        # small spacer between files
+        lines.append("")
+
     return "\n".join(lines).strip()
 
 
