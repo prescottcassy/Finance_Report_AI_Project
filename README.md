@@ -1,5 +1,5 @@
-ok dont do it agsin 
-# RAG-based Structure for Finance in AI Class
+
+# RAG-based Structure for 10K Analysis Comparison for Finance in AI Class
 Verify numeric claims in analysis documents against an SEC 10‑K.
 
 Features
