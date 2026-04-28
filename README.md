@@ -1,3 +1,4 @@
+ok dont do it agsin 
 # RAG-based Structure for Finance in AI Class
 Verify numeric claims in analysis documents against an SEC 10‑K.
 
@@ -28,7 +29,4 @@ npm run dev
 3. POST `/analyze` with `file` (10‑K) and `analysis_files[]`; download PDF via `/download/<job_id>`.
 
 Notes
-- Focuses only on numeric correctness and removes common metadata lines.
-- Scanned PDFs may yield "Unclear" findings due to extraction quality.
-
-Files: `scripts/extract_10k.py`, `backend/10k_reader.py`, `backend/pdf_generator.py`.
+- Focuses only on numeric correctness and removes common metadata lines
