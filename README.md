@@ -1,40 +1,63 @@
 # Finance Report AI Project
 
-Finance Report AI Project is a full-stack 10-K verification app that compares uploaded analysis documents against an SEC 10-K using extracted source evidence and RAG-style retrieval.
+Finance Report AI Project is a focused verification tool that compares numeric statements in user-supplied analysis documents against the authoritative text and tables in an SEC 10-K filing. The goal is not to provide investment advice or opinions, but to confirm whether numeric claims (amounts, percentages, years, counts) in an analysis document match the source 10-K.
 
-## What it does
+Key features
+- Extracts full text and financial tables from a 10-K PDF.
+- Builds a retrievable corpus (RAG) of source excerpts split into overlapping chunks.
+- For each uploaded analysis document, finds candidate claims and verifies them against retrieved excerpts with a model prompt that focuses exclusively on numeric correctness.
+- Prioritizes numeric evidence during retrieval and scoring so matching numbers are favored.
+- Produces a JSON verification result and an optional downloadable PDF report summarizing verification status.
 
-- Upload a 10-K PDF from any company.
-- Upload one or more analysis documents to verify against the 10-K.
-- Extract source text and financial tables from the filing.
-- Retrieve supporting 10-K evidence for claims inside uploaded analysis files and flag unsupported statements.
-- Render a verification report in the browser and export it as a PDF.
+Architecture overview
+- Frontend: Vue 3 + Vite — simple UI to upload a 10-K and one or more analysis documents, view verification cards, and download the PDF report.
+- Backend: Flask API (in `backend/`) — handles extraction, RAG corpus building, verification, and PDF generation.
+- Extraction: `scripts/extract_10k.py` extracts ITEM sections and CSV-style financial tables.
+- Verification logic and RAG utilities: `backend/10k_reader.py`.
+- PDF generation: `backend/pdf_generator.py` (ReportLab).
 
-## Tech Stack
+How it verifies
+1. Extraction: the backend extracts the 10-K full text and saves key ITEM sections (Business Overview, Risk Factors, MD&A, Financials). Financial tables are saved as CSV snippets when found.
+2. Corpus: extracted sections are chunked into overlapping text blocks to form a RAG corpus.
+3. Claim selection: uploaded analysis documents are split into candidate claims (sentences/paragraphs) but common metadata lines (e.g., "Prepared by:", "Date:") are removed before claim extraction.
+4. Retrieval: lexical overlap plus numeric-priority scoring returns the most relevant chunks for each claim. Exact numeric token matches are heavily weighted.
+5. Model verification: the verifier prompt requires numeric-only comparisons (no opinions). The model must return a structured short response:
+	 - VERDICT: Supported | Partially Supported | Unsupported | Unclear
+	 - REASON: concise numeric comparison(s) only
+	 - EVIDENCE: one or two short quotes/paraphrases from the retrieved excerpts
+6. Aggregation: findings are combined into a job result and optionally rendered into a PDF report.
 
-- Frontend: Vue 3 + Vite
-- Backend: Flask
-- PDF extraction: pypdf, pdfplumber
-- Report generation: reportlab
-- AI generation: Anthropic API used for claim verification against retrieved evidence
+Supported file types
+- 10-K input: PDF (best when text-extractable; image-only PDFs will yield limited results).
+- Analysis documents: PDF, .txt, .md (PDFs are text-extracted; if extraction fails the document will be marked "needs_review").
 
-## Project Structure
+API endpoints (backend)
+- `POST /analyze` — multipart/form-data: `file` (10-K PDF) and `analysis_files[]` (one or more analysis files). Returns `{ job_id, status }`.
+- `GET /job/<job_id>` — job status and JSON verification results.
+- `GET /download/<job_id>` — download generated PDF (when available).
 
-- `backend/` Flask API, report generation, and verification logic
-- `scripts/` 10-K extraction and section parsing logic
-- `src/` Vue frontend
+Important environment variables
+- `ANTHROPIC_API_KEY` — API key for Anthropic (required for AI verification).
+- `ANTHROPIC_MODEL` — preferred model id (optional, falls back to configured candidates).
+- `ANTHROPIC_CONTINUATION_ROUNDS` — how many continuation rounds to request from the model (default: 2).
+- Optional metadata for PDFs: `COURSE_NAME`, `PROFESSOR_NAME` (used only for cover metadata when generating PDFs).
 
-## Setup
+Quick setup
+1. Create and activate a Python virtual environment.
 
-### 1. Install Python dependencies
+```bash
+python -m venv venv
+# Windows PowerShell
+.\venv\Scripts\Activate.ps1
+```
 
-```powershell
+2. Install Python dependencies
+
+```bash
 python -m pip install -r requirements.txt
 ```
 
-### 2. Configure environment variables
-
-Create a `.env` file in the project root:
+3. Create a `.env` (project root) with at least:
 
 ```env
 ANTHROPIC_API_KEY=your_api_key_here
@@ -42,46 +65,39 @@ ANTHROPIC_MODEL=claude-3-5-haiku-latest
 ANTHROPIC_CONTINUATION_ROUNDS=2
 ```
 
-### 3. Install frontend dependencies
+4. Install frontend dependencies and run the UI
 
-```powershell
+```bash
 cd src
 npm install
-```
-
-## Run the app
-
-### Start the backend
-
-```powershell
-python backend/app.py
-```
-
-### Start the frontend
-
-```powershell
-cd src
 npm run dev
 ```
 
-Open the Vite URL shown in the terminal, upload a 10-K PDF, add the analysis documents you want checked, and wait for the verification report to finish.
+5. Start the backend
 
-The verification step accepts analysis PDFs, `.txt`, or `.md` files and checks their claims against retrieved 10-K evidence.
+```bash
+python backend/app.py
+```
 
-## Output
+Example curl test (local backend running on port 8000)
 
-The app produces:
+```bash
+curl -X POST "http://localhost:8000/analyze" \
+	-F "file=@/path/to/10k.pdf" \
+	-F "analysis_files[]=@/path/to/analysis1.pdf" \
+	-F "analysis_files[]=@/path/to/analysis2.txt"
+```
 
-- Analysis verification results for any uploaded documents
-- A downloadable PDF report
+Outputs
+- JSON job result: contains `analysis_verification` array with `findings` per claim and an aggregated `verification_summary`.
+- PDF report: downloadable from `/download/<job_id>` when the PDF generation step completes; stored in `backend/generated_reports/`.
 
-## Notes
+Design notes and limitations
+- The verifier focuses on numeric correctness and explicitly avoids offering opinions or investment recommendations.
+- Accuracy depends on extraction quality; if a PDF is scanned (image-only), extraction may be poor and many claims will be "Unclear".
+- The Anthropic API is used for natural-language verification; network/API errors will surface as job errors.
 
-- The pipeline is designed to work across different companies and 10-K formats.
-- Financial statement data is extracted to improve evidence retrieval.
-- Uploaded analysis documents are checked against retrieved 10-K evidence and summarized in the report.
-- If a model or environment variable is missing, the backend will fail fast with a clear error.
+If you'd like, I can also: run a sample analysis with a provided 10-K and analysis file, or add a short test harness to exercise `/analyze` from `scripts/`.
 
-## License
-
-No license has been specified yet.
+---
+This README was updated to precisely describe the project's verification-first, numeric-focused behavior and how to run it locally.

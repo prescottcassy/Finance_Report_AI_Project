@@ -102,16 +102,6 @@ def create_pdf_report(
     
     story = []
     styles = getSampleStyleSheet()
-    cover_date = _format_cover_date(generated_on)
-    cover_course = _display_value(
-        course_name or os.getenv("COURSE_NAME"),
-        "ITAI 3378 Finance and Business AI\nSpring 2026",
-    )
-    cover_professor = _display_value(
-        professor_name or os.getenv("PROFESSOR_NAME"),
-        "Karthik Rajan",
-    )
-    
     # Custom styles
     cover_company_style = ParagraphStyle(
         'CoverCompany',
@@ -145,16 +135,6 @@ def create_pdf_report(
         fontName='Helvetica-Oblique'
     )
 
-    cover_meta_style = ParagraphStyle(
-        'CoverMeta',
-        parent=styles['Normal'],
-        fontSize=10.5,
-        textColor=colors.HexColor('#89b9f0'),
-        alignment=TA_CENTER,
-        leading=14,
-        fontName='Helvetica'
-    )
-    
     heading_style = ParagraphStyle(
         'CustomHeading',
         parent=styles['Heading2'],
@@ -202,6 +182,24 @@ def create_pdf_report(
         alignment=TA_CENTER,
         fontName='Helvetica-Oblique',
         leading=9,
+    )
+
+    evidence_box_style = ParagraphStyle(
+        'EvidenceBox',
+        parent=styles['Normal'],
+        fontSize=9,
+        textColor=colors.HexColor('#f3f4f6'),
+        backColor=colors.HexColor('#111827'),
+        alignment=TA_LEFT,
+        leading=12,
+        fontName='Helvetica',
+        borderWidth=0.8,
+        borderColor=colors.HexColor('#374151'),
+        borderPadding=7,
+        leftIndent=0,
+        rightIndent=0,
+        spaceBefore=0,
+        spaceAfter=0,
     )
     
     # Page 1: Dark cover with title, metrics, and class attribution
@@ -251,16 +249,6 @@ def create_pdf_report(
         story.append(metrics_table)
         story.append(Spacer(1, 0.48*inch))
 
-    cover_course_single_line = " ".join(str(cover_course).splitlines()).strip()
-    cover_meta_lines = [
-        f"Date: {cover_date}",
-        f"Course: {cover_course_single_line}",
-        f"Professor: {cover_professor}",
-    ]
-    story.append(Spacer(1, 0.04*inch))
-    for line in cover_meta_lines:
-        story.append(Paragraph(_escape_paragraph_text(line), cover_meta_style))
-
     story.append(PageBreak())
 
     # BLUF + Story: keep continuous flow and avoid forced blank pages.
@@ -286,7 +274,27 @@ def create_pdf_report(
             continue
         friendly_title = str(_get_friendly_section_title(title) or title)
         story.append(Paragraph(friendly_title.upper(), heading_style))
+        # Add summary paragraph
         story.append(Paragraph(_escape_paragraph_text(_display_value(section.get('summary', ''), '')), body_style))
+
+        # If this is a verification report, render each finding with verdict and evidence
+        if report_type == "verification":
+            findings = section.get('findings') or []
+            if findings:
+                story.append(Spacer(1, 0.06*inch))
+                for finding in findings:
+                    verdict = finding.get('verdict', 'Unclear')
+                    claim = _escape_paragraph_text(finding.get('claim', ''))
+                    evidence = _escape_paragraph_text(finding.get('evidence', ''))
+
+                    # Verdict + claim
+                    story.append(Paragraph(f"{verdict}: {claim}", body_style))
+                    # Evidence (if present)
+                    if evidence:
+                        story.append(Spacer(1, 0.03*inch))
+                        story.append(Paragraph(f"Evidence: {evidence}", evidence_box_style))
+                    story.append(Spacer(1, 0.04*inch))
+
         story.append(Spacer(1, 0.08*inch))
     
     # Build PDF

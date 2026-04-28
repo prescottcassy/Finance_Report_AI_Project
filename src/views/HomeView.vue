@@ -55,9 +55,7 @@
       </div>
     </div>
 
-    <div v-if="tenKFile" class="company-input">
-      <input v-model="companyName" type="text" placeholder="Company name (e.g. Qualcomm)" />
-    </div>
+    <!-- Company name derived from uploaded 10-K filename; input removed -->
 
     <LoadingSpinner v-if="isLoading" :message="loadingMessage" :progress="loadingProgress" />
     <button v-else-if="tenKFile" class="analyze-btn" :disabled="!analysisFiles.length" @click="handleUpload">Run Verification</button>
@@ -74,7 +72,7 @@ const tenKInput = ref(null)
 const analysisInput = ref(null)
 const tenKFile = ref(null)
 const analysisFiles = ref([])
-const companyName = ref('')
+// companyName input removed; derive from uploaded file name instead
 const isDraggingTenK = ref(false)
 const isDraggingAnalysis = ref(false)
 const isLoading = ref(false)
@@ -116,7 +114,8 @@ async function handleUpload() {
   
   const formData = new FormData()
   formData.append('file', tenKFile.value)
-  formData.append('company', companyName.value || 'Company')
+  const companyBase = tenKFile.value ? tenKFile.value.name.replace(/\.[^/.]+$/, '') : 'Company'
+  formData.append('company', companyBase)
   for (const file of analysisFiles.value) {
     formData.append('analysis_files', file)
   }
@@ -265,20 +264,7 @@ h1 {
 .file-selected p { color: #ffffff; font-size: 1rem; margin: 8px 0 4px; }
 .file-selected span { color: #6366f1; font-size: 0.875rem; }
 
-.company-input input {
-  width: 100%;
-  max-width: 560px;
-  padding: 12px 16px;
-  background: #1a1a1a;
-  border: 1px solid #2d2d2d;
-  border-radius: 10px;
-  color: #ffffff;
-  font-size: 0.95rem;
-  outline: none;
-  box-sizing: border-box;
-}
-
-.company-input input:focus { border-color: #6366f1; }
+/* company input removed */
 
 .analyze-btn {
   padding: 14px 40px;
