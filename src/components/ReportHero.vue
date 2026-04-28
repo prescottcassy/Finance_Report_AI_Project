@@ -1,62 +1,78 @@
 <template>
-  <div class="report-hero">
-    <h1>{{ report.companyName }}</h1>
-    <p class="fiscal-year">Fiscal Year {{ report.fiscalYear }}</p>
+  <div class="report-section">
+    <div class="section-header" @click="toggle">
+      <h3>{{ section.title }}</h3>
+      <span>{{ isOpen ? '▲' : '▼' }}</span>
+    </div>
 
-    <div v-if="report.verification_summary" class="bluf">
-      <h2>Verification Summary</h2>
-      <p class="summary-text">{{ report.verification_summary }}</p>
+    <div v-if="isOpen" class="section-body">
+      <p class="section-summary">{{ section.summary }}</p>
     </div>
   </div>
 </template>
 
 <script setup>
+import { ref } from 'vue'
+
 defineProps({
-  report: {
+  section: {
     type: Object,
     required: true
   }
 })
+
+const isOpen = ref(false)
+
+function toggle() {
+  isOpen.value = !isOpen.value
+}
 </script>
 
 <style scoped>
-.report-hero {
+.report-section {
   background: rgba(26, 26, 26, 0.96);
-  border-radius: 18px;
-  padding: 28px 24px;
   border: 1px solid #2d2d2d;
-  box-shadow: 0 16px 30px rgba(0, 0, 0, 0.2);
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.16);
 }
 
-h1 {
-  font-size: 2.2rem;
-  font-weight: 600;
-  margin: 0 0 8px;
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 18px 20px;
+  cursor: pointer;
+  transition: background 0.2s;
 }
 
-.fiscal-year {
-  color: #6b7280;
-  font-size: 1rem;
-  margin: 0 0 24px;
+.section-header:hover {
+  background: #242424;
 }
 
-.bluf,
-.narrative {
-  margin: 18px 0 0;
-}
-
-h2 {
-  font-size: 1.4rem;
+h3 {
+  margin: 0;
+  font-size: 1.2rem;
   font-weight: 500;
-  color: #6366f1;
-  margin: 0 0 12px;
+  color: #ffffff;
 }
 
-.summary-text {
+span {
+  color: #6366f1;
+  font-size: 0.9rem;
+}
+
+.section-body {
+  padding: 18px 20px 20px;
+  border-top: 1px solid #2d2d2d;
+  background: #111827;
+}
+
+.section-summary {
+  margin: 0;
   color: #d1d5db;
   line-height: 1.8;
-  margin: 0;
-  font-size: 1rem;
+  font-size: 0.98rem;
   white-space: pre-wrap;
 }
 </style>
